@@ -1,5 +1,6 @@
 CC     = gcc
 CFLAGS = -Wall -Wextra -std=c11 -O2 \
+         -D_POSIX_C_SOURCE=199309L \
          -I include \
          -I ../shared \
          -I ../ECU_Firmware/include
@@ -10,7 +11,8 @@ TARGET = $(BUILD)/hil_sim
 SRCS = src/main.c \
        src/vehicle_model.c \
        src/track.c \
-       src/autopilot.c \
+       src/path_planning.c \
+       src/motion_control.c \
        src/visualiser.c \
        ../ECU_Firmware/src/torque_vectoring.c
 
