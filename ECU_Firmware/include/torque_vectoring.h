@@ -29,8 +29,17 @@
 
 /* Proportional gain: how aggressively to respond to yaw rate error.
  * Units: Nm of torque bias per rad/s of yaw rate error.
- * Start here and adjust with [ / ] at runtime. */
-#define KP_YAW_DEFAULT  50.0f
+ * Start here and adjust with [ / ] at runtime.
+ * The higher the gain, the harder TV fights to hit the desired yaw rate.
+ * With the soft-front understeer setup (CA_FRONT < CA_REAR), a gain of 200
+ * is needed to produce a clearly visible lap-time difference.
+ * You can adjust at runtime with [ / ] to explore the effect. */
+#define KP_YAW_DEFAULT  200.0f
+
+/* Reference speed for speed-dependent gain scaling.
+ * Gain = Kp * (TV_SPEED_REF_MS / v).  Set to 12 so TV stays authoritative
+ * up through corner entry speeds (typically 10–15 m/s). */
+#define TV_SPEED_REF_MS  12.0f
 
 /* Hard limit on torque per motor, Nm. Represents motor peak torque. */
 #define MAX_MOTOR_TORQUE_NM  200.0f

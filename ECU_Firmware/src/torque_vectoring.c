@@ -69,8 +69,19 @@ void torque_vectoring_update(const SensorData *sensors,
     /* --- Step 2: Yaw rate error --- */
     float yaw_error = desired_yaw_rate - sensors->yaw_rate;
 
-    /* --- Step 3: Torque bias --- */
-    float bias = kp_yaw * yaw_error;
+    /* --- Step 3: Torque bias (speed-dependent gain) ---
+     *
+     * At higher speed, the same left/right torque differential produces a
+     * larger body-slip change relative to available tyre force.  We scale Kp
+     * inversely with speed so the yaw moment response feels consistent across
+     * the whole speed range.  The cap at 3×kp prevents over-aggressive
+     * response at near-zero speed (e.g. launch). */
+    float effective_kp = kp_yaw;
+    if (sensors->velocity > 2.0f) {
+        effective_kp = kp_yaw * (TV_SPEED_REF_MS / sensors->velocity);
+        if (effective_kp > kp_yaw * 3.0f) effective_kp = kp_yaw * 3.0f;
+    }
+    float bias = effective_kp * yaw_error;
 
     /* Clamp bias to half the motor's peak torque capacity.
      * This allows the inner wheel to go into regen while the outer drives,

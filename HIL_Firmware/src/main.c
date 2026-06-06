@@ -14,7 +14,7 @@
 
 #include "../include/vehicle_model.h"
 #include "../include/track.h"
-#include "../include/autopilot.h"
+#include "../include/motion_control.h"
 #include "../../shared/tv_interface.h"
 #include "../../ECU_Firmware/include/torque_vectoring.h"
 
@@ -43,7 +43,7 @@
  *     END_TRACK
  *
  *   State lines (one per display tick):
- *     STATE <x> <y> <heading> <speed_kmh> <yaw_deg_s> <fl> <fr> <rl> <rr> <tv> <kp> <lap> <elapsed_s>
+ *     STATE <x> <y> <heading> <speed_kmh> <yaw_deg_s> <fl> <fr> <rl> <rr> <tv> <kp> <lap> <elapsed_s> <steering_rad> <slip_angle_rad> <desired_yaw_rad_s> <ax_ms2> <ay_ms2> <vy_ms>
  *
  *   Commands come in on stdin (one character at a time):
  *     t  -- toggle torque vectoring
@@ -149,16 +149,32 @@ int main(void)
     SensorData   sensors = {0};
 
     track_init(&track);
-    /* Start heading = pi/2 (north): the right loop leaves the crossing point
-     * travelling upward (CCW), so the initial heading must match that direction. */
-    vehicle_model_init(&state, track.points[0].x, track.points[0].y, 3.14159265f / 2.0f);
 
-    /* --- Print track waypoints so the visualiser can draw the track --- */
+    /* Derive initial heading from the direction of the first track segment */
+    float init_dx = track.points[1].x - track.points[0].x;
+    float init_dy = track.points[1].y - track.points[0].y;
+    float init_heading = atan2f(init_dy, init_dx);
+    vehicle_model_init(&state, track.points[0].x, track.points[0].y, init_heading);
+
+    /* --- Print track data so the visualiser can draw the track and cones --- */
     printf("TRACK %d\n", track.count);
     for (int i = 0; i < track.count; i++) {
         printf("WP %.4f %.4f\n", track.points[i].x, track.points[i].y);
     }
     printf("END_TRACK\n");
+
+    printf("LEFT_CONES %d\n", track.left_count);
+    for (int i = 0; i < track.left_count; i++) {
+        printf("CONE %.4f %.4f\n", track.left_cones[i].x, track.left_cones[i].y);
+    }
+    printf("END_LEFT_CONES\n");
+
+    printf("RIGHT_CONES %d\n", track.right_count);
+    for (int i = 0; i < track.right_count; i++) {
+        printf("CONE %.4f %.4f\n", track.right_cones[i].x, track.right_cones[i].y);
+    }
+    printf("END_RIGHT_CONES\n");
+
     fflush(stdout);
 
     stdin_setup();
@@ -181,8 +197,8 @@ int main(void)
         next_tick += DT;
         tick++;
 
-        /* 1. Autopilot */
-        float driver_torque = autopilot_update(&state, &track);
+        /* 1. Motion control */
+        float driver_torque = motion_control_update(&state, &track);
 
         /* 2. Pack sensor data */
         sensors.yaw_rate       = state.yaw_rate;
@@ -213,7 +229,10 @@ int main(void)
         /* 6. Print state line at display rate */
         if (tick % TICKS_PER_FRAME == 0) {
             float elapsed = (float)(get_time_s() - sim_start);
-            printf("STATE %.3f %.3f %.4f %.2f %.2f %.1f %.1f %.1f %.1f %d %.1f %d %.1f %.4f\n",
+            float desired_yaw_rate = 0.0f;
+            if (state.velocity > 0.5f)
+                desired_yaw_rate = state.velocity * tanf(state.steering) / WHEELBASE_M;
+            printf("STATE %.3f %.3f %.4f %.2f %.2f %.1f %.1f %.1f %.1f %d %.1f %d %.1f %.4f %.4f %.4f %.3f %.3f %.3f\n",
                    state.x,
                    state.y,
                    state.heading,
@@ -224,7 +243,12 @@ int main(void)
                    kp_yaw,
                    track.lap_count,
                    elapsed,
-                   state.steering);             /* steering angle, radians */
+                   state.steering,              /* radians */
+                   state.slip_angle,            /* radians */
+                   desired_yaw_rate,            /* rad/s */
+                   state.ax,                    /* m/s^2 (for G-G display) */
+                   state.ay,                    /* m/s^2 (for G-G display) */
+                   state.vy);                   /* m/s  (lateral velocity) */
             fflush(stdout);
         }
 
