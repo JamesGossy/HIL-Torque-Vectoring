@@ -1,0 +1,1901 @@
+/*==============================================================================
+ *	
+ *                    			Tyre Model
+ *
+ *  This script is part of the vehicle model that provides tyre limits to rules 
+ *  based torque distribution to estimate the available forces needed to 
+ *  generate the requested yaw moment.
+ *                            
+ *	    				     Long mu                            
+ *	    				     |                                   
+ *	    				     |                                    
+ *	    				     | `\_                                
+ *	    				     |    `\_                            
+ *     					     |       `\_                          
+ *     					     |           `\_                      
+ *	   					     +-----------------> Fz              
+ *	
+ *	Tyre Model:
+ *  -----------
+ *	This script calculates the normal load on all tyres based on simple load 
+ *  transfer and downforce formulas.
+ *	The tyres longitudinal mu is scaled down linearly based on the normal 
+ *  load for each tyre.
+ *	The longitudinal mu is again scaled based on the lateral acceleration in 
+ *  the form of a friction elipse.
+ *	The tyres longitudinal grip limit is then calculated and converted to a 
+ *	toque to be consistent with the rest of the VC.
+ *  All units are in SI. [N, m]
+ *
+ *  Returns:
+ *  --------
+ *  FLtyreTorqueLimit : float
+ *      Estimated max possible torque from the tyre
+ *
+ *  FRtyreTorqueLimit : float
+ *     Estimated max possible torque from the tyre
+ *
+ *  RLtyreTorqueLimit : float
+ *     Estimated max possible torque from the tyre
+ *
+ *  RRtyreTorqueLimit : float
+ *     Estimated max possible torque from the tyre
+ *	
+ *============================================================================*/
+
+//------------------------------------------------------------------------------
+// Sensor + Car Data
+//------------------------------------------------------------------------------
+local speed = Sensors.Chassis.kalmanSpeed;
+local latG  = Sensors.IMU.Filter.latG;
+local longG = Sensors.IMU.longG;
+local muLongMin = 0.3;
+
+//------------------------------------------------------------------------------
+// Downforce
+//------------------------------------------------------------------------------
+
+Aero.dForce = 0.5 * Constants.rho * Calculate.Power(speed,2.0) * Constants.cLA;
+
+//------------------------------------------------------------------------------
+// Load Transfer
+//------------------------------------------------------------------------------
+
+// If IMU fault, set load transfer to 0, so this will not affect the torque 
+// multipliers
+if (Sensors.IMU.fault eq IMUDiagnostic.Fault) {
+	latLT  = 0.0;
+	longLT = 0.0;
+
+// Calculate Load Transfer & Apply Scaling 
+} else {
+	latLT = (latG * Constants.massWdriver * Constants.cogz / Constants.trackWidth);
+	longLT = (longG * Constants.massWdriver * Constants.cogz / Constants.wheelBase);
+}
+
+//  Load transfer to each tyre
+//  Car Load Transfer + Aero Load + mass
+//  If negative load on a corner clip to 0N
+
+local FLFn = (0.5 * (latLT - longLT));
+FLFn += (0.5 * Constants.aeroBalance * Aero.dForce); 
+FLFn += (0.5 * Constants.massWdriver * 9.81 * Constants.frontWeightBalance);
+FL.Fn  = Limit.Min(FLFn, 0.0);
+
+local FRFn = (0.5 * (-latLT - longLT));
+FRFn += (0.5 * Constants.aeroBalance * Aero.dForce);
+FRFn += (0.5 * Constants.massWdriver * 9.81 * Constants.frontWeightBalance);
+FR.Fn  = Limit.Min(FRFn, 0.0);
+
+local RLFn = (0.5 * (latLT + longLT));
+RLFn += (0.5 * (1.0 - Constants.aeroBalance) * Aero.dForce);
+RLFn += (0.5 * Constants.massWdriver * 9.81 * (1.0 - Constants.frontWeightBalance));
+RL.Fn  = Limit.Min(RLFn, 0.0);
+
+local RRFn = (0.5 * Constants.massWdriver * 9.81 * (1.0 - Constants.frontWeightBalance));
+RRFn += (0.5 * (1.0 - Constants.aeroBalance) * Aero.dForce);
+RRFn += (0.5 * (-latLT + longLT));
+RR.Fn  = Limit.Min(RRFn, 0.0);
+
+
+
+//------------------------------------------------------------------------------
+// Load Sensitivity
+//------------------------------------------------------------------------------
+//  Mu decreases linearly with normal load
+local FLmu = muLong - 2.7 * 1.0e-4 * FL.Fn;
+FL.mu = Limit.Range(FLmu, muLongMin, muLong);
+local FRmu = muLong - 2.7 * 1.0e-4 * FR.Fn;
+FR.mu = Limit.Range(FRmu, muLongMin, muLong);
+local RLmu = muLong - 2.7 * 1.0e-4 * RL.Fn;
+RL.mu = Limit.Range(RLmu, muLongMin, muLong);
+local RRmu = muLong - 2.7 * 1.0e-4 * RR.Fn;
+RR.mu = Limit.Range(RRmu, muLongMin, muLong);
+
+//------------------------------------------------------------------------------
+// Tyre Forces 
+//------------------------------------------------------------------------------
+//  Calculate the max Fx for each tyre
+//  fx = mu * fz
+FL.Fx = FL.mu * FL.Fn;
+FR.Fx = FR.mu * FR.Fn;
+RL.Fx = RL.mu * RL.Fn;
+RR.Fx = RR.mu * RR.Fn;
+
+//  Convert Fx to torque limit at each motor 
+FL.gripLimit = FL.Fx * Constants.WheelRadius / Constants.gearRatio; 
+FR.gripLimit = FR.Fx * Constants.WheelRadius / Constants.gearRatio;
+RL.gripLimit = RL.Fx * Constants.WheelRadius / Constants.gearRatio;
+RR.gripLimit = RR.Fx * Constants.WheelRadius / Constants.gearRatio;
+
+/*==============================================================================
+ *	
+ *                            Reference Generation
+ *	                         ----------------------
+ *	 This script generates a reference yaw moment taking into account lateral 
+ *   acceleration, IMU yaw rate and steering angle. It outputs a total desired yaw 
+ *   moment, which is used for rules based torque distribution. 
+ *
+ *	Parameters:
+ *	-----------
+ *	- Lateral Gain
+ *	- Yaw Rate Control Reference
+ *	- Yaw Rate Control Gain
+ *
+ *	Inputs:
+ *	-----------
+ *	- IMU Lat G
+ *	- Steering Curvature
+ *  - kalmanSpeed
+ *  - IMU Yaw Rate
+ *
+ *	Outputs:
+ *	-----------
+ *  - Yaw Error 
+ *  - Scaled Target Yaw Rate 
+ *  - Target Yaw Rate 
+ *  - Lateral Yaw Moment 
+ *  - YRC Yaw Moment 
+ *	- Total Desired Yaw Moment
+ *============================================================================*/
+
+//------------------------------------------------------------------------------
+// Lat G Control
+//------------------------------------------------------------------------------
+// No lateral torque distribution if IMU is faulty
+if (Sensors.IMU.fault eq IMUDiagnostic.Fault) {
+	YawMoment.lateral = 0.0;
+} else if (Regen.isActive eq BoolState.On) { 
+	YawMoment.lateral = Sensors.IMU.Filter.latG * RegenLateralGain; 
+} else { 
+	YawMoment.lateral = Sensors.IMU.Filter.latG * LateralGain;
+}
+
+//------------------------------------------------------------------------------
+// Yaw Rate Control (YRC)
+//------------------------------------------------------------------------------
+// Calculate target yaw rate based on steering angle
+// Convert target yaw rate from radians to degrees 
+YawRateControl.targetYawRate = Sensors.Chassis.kalmanSpeed * Sensors.Chassis.Steering.curvature * 180 / Calculate.Pi();
+
+// Scale target yaw rate
+// This adjusts the yaw error and acts as an understeer/oversteer gradient 
+YawRateControl.scaledTargetYawRate = YawRateControl.targetYawRate * YawRateControl.Reference;
+
+// Calculate yaw rate error
+// We divide by max yaw rate error, so that the gain is a human readable param
+// 150 we found as the max yaw rate error through data analysis
+// i.e. 100% gain = means 100% torque on one side when YRE is maximized
+YawRateControl.yawError = YawRateControl.scaledTargetYawRate - Sensors.IMU.yawRate; 
+
+
+// If the absolute yaw error is less than 10 
+// OR 
+// IMU check - If IMU fault, dont enter if statement
+if ((Calculate.Absolute(YawRateControl.yawError) < 10)
+	or (Sensors.IMU.fault eq IMUDiagnostic.Fault)) {
+		// No lateral distribution if IMU is faulty
+		YawMoment.yrc = 0.0;
+} else if (Regen.isActive eq BoolState.On) { 
+	YawMoment.yrc = YawRateControl.yawError * YawRateControl.RegenGain;
+} else {
+		YawMoment.yrc = YawRateControl.yawError * YawRateControl.Gain;
+}
+
+//------------------------------------------------------------------------------
+// Total Desired Yaw Moment
+//------------------------------------------------------------------------------
+// Outputs a motor torque (Nm)
+YawMoment.desired = YawMoment.lateral + YawMoment.yrc;
+
+// Save VC mode from 9pos --> do we need this 
+This.mode = LVSystems.Dash.VCmode9Pos;
+
+/*==============================================================================
+  	
+                      Rules Based Torque Distribution
+ 	
+  	Redistributes torque to achieve desired yaw moment + longitudinal force 
+    within constraints of tyres and powertrain 
+ 	
+ ============================================================================*/
+
+//------------------------------------------------------------------------------
+// Local Requests
+//------------------------------------------------------------------------------
+// These local variables are created because unlike the actual channels, they can 
+// be overwritten. This is useful, as it allows the use of *= operators, which
+// massively simplifies the code.
+// The actual requests are sent at the very end of the code.
+local FLtorqueRequest = 0.0;
+local FRtorqueRequest = 0.0;
+local RLtorqueRequest = 0.0;
+local RRtorqueRequest = 0.0;
+
+local FLTargetVelocity = 0.0;
+local FRTargetVelocity = 0.0;
+local RLTargetVelocity = 0.0;
+local RRTargetVelocity = 0.0;
+
+
+//------------------------------------------------------------------------------
+// Regen and Throttle
+//------------------------------------------------------------------------------
+// 2024 FSAE Rules
+// EV.4.1.3 The powertrain must not regenerate energy when vehicle speed is 
+// between 0 and 5 km/hr
+
+// Initialise local variables outside of if statement for scoping
+local throttlePos  = 0.0;
+local brakePos     = 0.0;
+local paraTrqLimit = 0.01;
+local frontSlip    = 1.0;
+local rearSlip     = 1.0;
+local threshold    = 0.0;
+local regenPos     = OnePedalDrive.TorqueStartPos-OnePedalDrive.DeadzoneSize;
+// Calculate inverse scaling numbers
+//local reductionScaler = 100/regenPos;
+//local maxPosScaled = regenPos/reductionScaler;
+//local posScaler = 100/maxPosScaled;
+
+// Local variable to see if regen is on
+local regenOn = BoolState.Off;
+static local autonomousRegenState = BoolState.Off;
+if (Regen.Enable eq BoolState.On) {regenOn = Endurance.regenActive;}
+
+// Check regen conditions
+// Driven
+
+// Check brake type
+//Check type of regen
+local mechBrakes = 0;
+
+if (Sensors.Brakes.RegenMode eq Regen Enumeration.Pressure) {mechBrakes = 1;}
+
+local drivenRegenCondition = Autonomous.Mission eq Autonomous Mission.Manual Driving
+and ((Sensors.Brakes.PressureFront > Sensors.Brakes.BrakePressureStart and mechBrakes eq 1) // Mech Brakes pressed
+or (OnePedalDrive.engineBrakingOn eq BoolState.On										   // Engine braking
+and Sensors.APPS.throttlePosition < 0.05));												   // Prioritise APPS
+
+// Change if one pedal drive
+if (OnePedalDrive.OnePedalOn eq BoolState.On) {
+	drivenRegenCondition = (Autonomous.Mission eq Autonomous Mission.Manual Driving)
+	and (Sensors.APPS.throttlePosition < regenPos);
+}
+
+// Driverless
+local autonomousRegenCondition = (Autonomous.Mission neq Autonomous Mission.Manual Driving)					                 // AS mission
+and (Autonomous.DataLogger.DvSystemStatus.asState eq Autonomous State.AS Driving and Autonomous.r2dPause.Remaining() <= 0)	 // AS driving
+and ((Autonomous.IO.velocityRequest + Autonomous.Acceleration.Regen.MinSpeedDiff < Sensors.Chassis.kalmanSpeed)              // Requested velocity is lower than current velocity
+or autonomousRegenState eq BoolState.On);                                                                                    // In regen state previously
+
+// Check if we are in a regen-scenario
+if ((drivenRegenCondition or autonomousRegenCondition)
+	and (regenOn eq BoolState.On)							   // Regen enabled
+	and (Sensors.Chassis.kalmanSpeed > Regen.MinSpeed)		   // Speed > 5 km/h
+	and not ((DrivingMode eq drivingMode.RWD) or (mode eq 7))) // No regen in RWD
+	{   
+	
+	// Set regen active flag
+	Regen.isActive = BoolState.On;
+	autonomousRegenState = BoolState.On;
+
+	// Regen request and torque limit
+	if (OnePedalDrive.OnePedalOn eq BoolState.On) {
+	 // brakePos     = (maxPosScaled-Sensors.APPS.throttlePosition/reductionScaler)*posScaler/100; //Old Scaling
+	 brakePos	  = Calculate.Power(Calculate.Absolute((Sensors.APPS.throttlePosition-OnePedalDrive.TorqueStartPos+OnePedalDrive.DeadzoneSize) /
+					(OnePedalDrive.TorqueStartPos-OnePedalDrive.DeadzoneSize)), OnePedalDrive.RegenCurve); //Inverse Scaling
+	} else if (OnePedalDrive.engineBrakingOn eq BoolState.On and Sensors.Brakes.brakePosition < OnePedalDrive.engineBrakingStrength) {
+		brakePos = OnePedalDrive.engineBrakingStrength;
+	}
+	else {brakePos       = Sensors.Brakes.brakePosition;}
+	paraTrqLimit = Regen.TorqueLimit;
+
+	// Slip target is negative slip
+	// Also ensure that the target velocity is not negative
+	// Accel and skidpad modes have should not affect regen behaviour
+	frontSlip = 1.0 - SlipControl.front;
+	rearSlip  = 1.0 - SlipControl.rear;
+} else if ((Sensors.Brakes.hardBrake eq 1)	           // Hardbrake BSPD avoidance
+	and (regenOn eq BoolState.On) 			     	   // Regen enabled
+	and (Sensors.Chassis.kalmanSpeed > Regen.MinSpeed) // Speed > 5 km/h
+	and not ((DrivingMode eq drivingMode.RWD) or (mode eq 7)) // Don't do this in RWD 
+	) {
+
+	// Same as above. This condition will only trigger in cases where hardware 
+	// BSPD is at risk of tripping (> 5% throttle and hard brake), so we just
+	// regen.
+	Regen.isActive = BoolState.On;
+	
+	// Check if one pedal drive
+	if (OnePedalDrive.OnePedalOn eq BoolState.On) {
+	 // brakePos     = (maxPosScaled-Sensors.APPS.throttlePosition/reductionScaler)*posScaler/100; //Old Scaling
+	 brakePos	  = Calculate.Power(Calculate.Absolute((Sensors.APPS.throttlePosition-OnePedalDrive.TorqueStartPos+OnePedalDrive.DeadzoneSize) /
+					(OnePedalDrive.TorqueStartPos-OnePedalDrive.DeadzoneSize)), OnePedalDrive.RegenCurve); //Inverse scaling
+	}
+	else {brakePos       = Sensors.Brakes.brakePosition;}
+	paraTrqLimit   = Regen.TorqueLimit;
+	frontSlip      = 1.0 - SlipControl.front;
+	rearSlip       = 1.0 - SlipControl.rear;
+
+} else {
+	// Set regen inactive flag
+	Regen.isActive = BoolState.Off;
+	
+	// Coasting Zone
+	if (Sensors.APPS.throttlePosition < OnePedalDrive.TorqueStartPos) {throttlePos = 0;}
+	
+	// Throttle request and torque limit
+	// Check if one pedal drive
+	if (OnePedalDrive.OnePedalOn eq BoolState.On) {
+		// Coasting Zone
+		if (Sensors.APPS.throttlePosition < OnePedalDrive.TorqueStartPos) {throttlePos = 0;}
+		else {
+			throttlePos  = Calculate.Power((Sensors.APPS.throttlePosition - OnePedalDrive.TorqueStartPos) / 
+						   (1 - OnePedalDrive.TorqueStartPos), OnePedalDrive.TorqueCurve); // Scale between min and max
+		}
+	}
+	else {
+	throttlePos = Sensors.APPS.throttlePosition;
+	}
+	
+	paraTrqLimit = TorqueLimit;
+
+	// Slip target is positive slip
+	// Ensure the target velocity does not come under a minimum threshold
+	frontSlip = 1.0 + SlipControl.front;
+	rearSlip  = 1.0 + SlipControl.rear;
+	threshold = SlipControl.Threshold;
+}
+
+// Save throttlePos and brakePos to channels for logging
+OnePedalDrive.BrakePos = brakePos;
+OnePedalDrive.ThrottlePos = throttlePos;
+
+//------------------------------------------------------------------------------
+// Local Torque Limits
+//------------------------------------------------------------------------------
+// The individual corner torque limit can be determined as the minimum 
+// of the derating torque limit and the vehicle model grip limit
+// paraTrqLimit = torque limit parameter set on M1 Tune
+local FLtorqueLimit = Limit.Max(Calculate.Min(Tractive System.Derating.FL.torqueLimit, FL.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+local FRtorqueLimit = Limit.Max(Calculate.Min(Tractive System.Derating.FR.torqueLimit, FR.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+local RLtorqueLimit = Limit.Max(Calculate.Min(Tractive System.Derating.RL.torqueLimit, RL.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+local RRtorqueLimit = Limit.Max(Calculate.Min(Tractive System.Derating.RR.torqueLimit, RR.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+
+//------------------------------------------------------------------------------
+// Calculate Default Front/Rear Torque Split 
+//------------------------------------------------------------------------------
+// Check if we are currently regenerating to determine if we use brake bias
+// or torque split. 
+// The torque split or brake bias can be calculated by scaling down either the 
+// front or rear axle to achieve the desired ratio. 
+// For example if both axles started at 100% and the split was 30% 
+// front and 70% rear, we would leave the rear axle at 100% and scale the 
+// front axle by 30/70 to achieve the desired ratio.
+if (Regen.isActive eq BoolState.On) {
+	if (OnePedalDrive.engineBrakingOn eq BoolState.On and Sensors.Brakes.brakePosition < OnePedalDrive.engineBrakingStrength) {
+		// Mimic rear wheel engine braking bias
+		FLtorqueLimit *= OnePedalDrive.engineBrakingBias / (1-OnePedalDrive.engineBrakingBias);
+		FRtorqueLimit *= OnePedalDrive.engineBrakingBias / (1-OnePedalDrive.engineBrakingBias);
+	} else {
+		if (Regen.BrakeBias < 0.5) {
+			// Front wheels
+			FLtorqueLimit *= Regen.BrakeBias / (1-Regen.BrakeBias);
+			FRtorqueLimit *= Regen.BrakeBias / (1-Regen.BrakeBias);
+		} else {
+			// Rear wheels
+			RLtorqueLimit *= (1 - Regen.BrakeBias) / Regen.BrakeBias;
+			RRtorqueLimit *= (1 - Regen.BrakeBias) / Regen.BrakeBias;
+		}
+	}
+} else {
+	if (TorqueSplit > 0.5) {
+		// Front wheels
+		FLtorqueLimit *= (1 - TorqueSplit) / TorqueSplit;
+		FRtorqueLimit *= (1 - TorqueSplit) / TorqueSplit;
+	} else {
+		// Rear wheels
+		RLtorqueLimit *= (1 - TorqueSplit) / TorqueSplit;
+		RRtorqueLimit *= (1 - TorqueSplit) / TorqueSplit;
+	}
+}
+
+//------------------------------------------------------------------------------
+// Accel
+//------------------------------------------------------------------------------
+// During the accel event, we want the torque to be distributed approximately 
+// based on the wheel loads.
+if ((mode eq Accel.mode) // Accel mode
+	and (Sensors.Chassis.kalmanSpeed > 2)) {
+
+	// Calculate the relative load on each axle
+	local LT = Sensors.IMU.longG / 9.81 * Constants.cogz / Constants.wheelBase;
+	local frontLoad = 1 - LT;
+	local rearLoad  = 1 + LT;
+	
+	// Front theoretical torque limit
+	local frontTorque = frontLoad / rearLoad;
+
+	// Set torque multipliers
+	FLtorqueLimit *= frontTorque;
+	FRtorqueLimit *= frontTorque;
+	RLtorqueLimit *= 1.0;
+	RRtorqueLimit *= 1.0;
+}
+
+//------------------------------------------------------------------------------
+// Driving Mode
+//------------------------------------------------------------------------------
+// Remove any torque from the wheels that are not driven, and send all torque
+// to the wheels that are driven. 
+// VC modes 7 and 8 are fail-safes, for RWD and FWD respectively
+if ((DrivingMode eq drivingMode.RWD) or (mode eq 4)) {
+	FLtorqueLimit = 0.0;
+	FRtorqueLimit = 0.0;
+} else if (DrivingMode eq drivingMode.FWD or (mode eq 5)) {
+	RLtorqueLimit = 0.0;
+	RRtorqueLimit = 0.0;
+}
+
+// Determine overall torque limit by finding the minimum value between the power-limited 
+// total torque and the sum of individual torque limits
+local sumTorqueLimit = FLtorqueLimit + FRtorqueLimit + RLtorqueLimit + RRtorqueLimit;
+Torque.totalLimit = Calculate.Min(Tractive System.Derating.powerLimitedTotalTorque, sumTorqueLimit);
+
+// There is two modes we use 
+// 1. TORQUE BASED MODE 
+// Driver request is determined by the pedal position and 
+// is only ever capped if it exceeds limits
+// The total torque available is calculated as:
+// TotalTorque = 29.1 Nm (per motor) * 4 motors = 116.4 Nm 
+// The torque target is then scaled based on the pedal position
+// If the calculated torque target exceeds system limits, it is capped 
+// Torque.target = Calculate.Min((116.4 * brakePos), Torque.totalLimit)
+// 2. POWER BASED MODE 
+// We scale the pedal position based on how much torque is available 
+// Torque.target = Torque.totalLimit * pedalPosition
+// ACCEL 
+
+local pedalPosition = 0.0; 
+// Scale total torque limit by pedal position to match driver request
+if (Autonomous.mission eq Autonomous Mission.Manual Driving) {
+	// TORQUE BASED THROTTLE AND BRAKE 
+	if ((TorqueBasedThrottle eq BoolState.On) and (TorqueBasedBrake eq BoolState.On)) {
+		//If bothe the throttle and brake are requesting we prioritise the brake for safety
+		if ((throttlePos > 0.0) and (brakePos > 0.0)) {
+			pedalPosition = brakePos;
+		} else {
+			pedalPosition = Calculate.Max(throttlePos, brakePos);
+		}
+		Torque.target = Calculate.Min((100 * pedalPosition), Torque.totalLimit);
+	// TORQUE BASED THROTTLE - POWER BASED BRAKE
+	} else if ((TorqueBasedThrottle eq BoolState.On) and (TorqueBasedBrake eq BoolState.Off)) {
+		if ((throttlePos > 0.0) and (brakePos > 0.0)) {
+			Torque.target = Torque.totalLimit * brakePos;
+		} else if (throttlePos > 0.0) {
+			Torque.target = Calculate.Min((100 * throttlePos), Torque.totalLimit);
+		} else { 
+			Torque.target = Torque.totalLimit * brakePos;
+		}
+	// POWER BASED THROTTLE - TORQUE BASED BRAKE 
+	} else if ((TorqueBasedThrottle eq BoolState.Off) and (TorqueBasedBrake eq BoolState.On)) {
+		if ((throttlePos > 0.0) and (brakePos > 0.0)) {
+			Torque.target = Calculate.Min((100 * brakePos), Torque.totalLimit);
+		} else if (throttlePos > 0.0) {
+			Torque.target = Torque.totalLimit * throttlePos;
+		} else { 
+			Torque.target = Calculate.Min((100 * brakePos), Torque.totalLimit);
+		}
+	// POWER BASED THROTTLE AND BRAKE 
+	} else { 
+		if ((throttlePos > 0.0) and (brakePos > 0.0)) {
+			pedalPosition = brakePos;
+		} else {
+			pedalPosition = Calculate.Max(throttlePos, brakePos);
+		}
+		Torque.target = Torque.totalLimit * pedalPosition;
+	}
+// Autonomous 
+} else { // Set the total torque limit to total limit
+	Torque.target = Torque.totalLimit;
+}
+
+ 
+// Initialise Torque Requests
+local LeftRequest = 0.0;
+local RightRequest = 0.0;
+
+//Reducing to 2 side problem, starting from limits and bleeding to hit
+// YM Request
+
+local LeftLim = FLtorqueLimit + RLtorqueLimit;
+local RightLim = FRtorqueLimit + RRtorqueLimit;
+
+
+Initial.YMrequest = LeftLim - RightLim;
+
+YawMoment.delta = Initial.YMrequest - YawMoment.desired;
+//  Bleeds to reach Torque request, or as close as possible to get.
+if (YawMoment.delta > 0.0) {
+	LeftRequest = Calculate.max(LeftLim - YawMoment.delta, 0.0);
+	RightRequest = RightLim;
+}
+else {
+	RightRequest = Calculate.max(RightLim + YawMoment.delta, 0.0);
+	LeftRequest = LeftLim;
+}
+
+Initial.totalRequest = LeftRequest + RightRequest;
+Initial.totalBleed = Initial.totalRequest - Torque.target;
+
+//Bleeds once, maintaining yaw moment
+if (Initial.totalBleed > 0.0) {
+	LeftRequest = Calculate.Max(LeftRequest - Initial.totalBleed/2,0.0);
+	RightRequest = Calculate.Max(RightRequest - Initial.totalBleed/2,0.0);
+}
+
+Middle.totalRequest = LeftRequest + RightRequest;
+Torque.totalBleed = Middle.totalRequest - Torque.target;
+
+// If torque bleed doesn't reach total torque initially, was limited by
+// 1 axle, so bleed again to get all the way
+if (Torque.totalBleed > 0.0) {
+	LeftRequest = Calculate.Max(LeftRequest - Torque.totalBleed,0.0);
+	RightRequest = Calculate.Max(RightRequest - Torque.totalBleed,0.0);
+}
+
+Torque.totalRequest = LeftRequest + RightRequest;
+YawMoment.request = LeftRequest - RightRequest;
+
+
+// Allocating torque F to R, using equal utilistion
+FLtorqueRequest = LeftRequest/LeftLim*FLtorqueLimit;
+FRtorqueRequest = RightRequest/RightLim*FRtorqueLimit;
+RLtorqueRequest = LeftRequest/LeftLim*RLtorqueLimit;
+RRtorqueRequest = RightRequest/RightLim*RRtorqueLimit;
+
+FL.utilisation = FLtorqueRequest/FLtorqueLimit;
+FR.utilisation = FRtorqueRequest/FRtorqueLimit;
+RL.utilisation = RLtorqueRequest/RLtorqueLimit;
+RR.utilisation = RRtorqueRequest/RRtorqueLimit;
+
+//------------------------------------------------------------------------------
+// Reference Speed
+//------------------------------------------------------------------------------
+// The reference speeds are set in deg/s, due to how MoTeC wants variables stored.
+local FLrefSpeed = Limit.Min(FL.refSpeed * frontSlip, threshold);
+local FRrefSpeed = Limit.Min(FR.refSpeed * frontSlip, threshold);
+local RLrefSpeed = Limit.Min(RL.refSpeed * rearSlip, threshold);
+local RRrefSpeed = Limit.Min(RR.refSpeed * rearSlip, threshold);
+
+//------------------------------------------------------------------------------
+// Local Speed Request
+//-----------------------------------------------------------------------------
+// Speed requests are set to 0 by default, as this is a failsafe
+FLTargetVelocity = 0.0;
+FRTargetVelocity = 0.0;
+RLTargetVelocity = 0.0;
+RRTargetVelocity = 0.0;
+
+//------------------------------------------------------------------------------
+// Inverter Side Speed Control
+//------------------------------------------------------------------------------
+if ((SlipControl.Mode eq Speed Control Enumeration.Inverter)
+	and (mode neq 0)) { // Don't do speed control in testfire mode
+	// With inverter side controls, we simply give a target velocity and let
+	// the inverter do the rest
+	FLTargetVelocity = FLrefSpeed;
+	FRTargetVelocity = FRrefSpeed;
+	RLTargetVelocity = RLrefSpeed;
+	RRTargetVelocity = RRrefSpeed;
+}
+
+//------------------------------------------------------------------------------
+// Testfire Mode
+//------------------------------------------------------------------------------
+// In testfire mode, we want to set the target speed to the speed limit
+if (mode eq 0) {
+	FLTargetVelocity = SpeedLimit;
+	FRTargetVelocity = SpeedLimit;
+	RLTargetVelocity = SpeedLimit;
+	RRTargetVelocity = SpeedLimit;
+}
+
+//------------------------------------------------------------------------------
+// Autonomous Requests
+//------------------------------------------------------------------------------
+// If we are in an autonomous mission, we want to work with speed requests
+// rather than torque requests.
+if (Autonomous.Mission neq Autonomous Mission.Manual Driving) {
+	if (Autonomous.DataLogger.DvSystemStatus.asState eq Autonomous State.AS Driving and
+	Autonomous.r2dPause.Remaining() <= 0) {
+		// Read velocity request from autonomous IO
+		local velocityRequest = Autonomous.IO.velocityRequest;
+
+		velocityRequest *= Constants.gearRatio;   // Convert to motor speed
+		velocityRequest /= Constants.wheelRadius; // Convert to rad/s
+		velocityRequest *= 180 / Calculate.PI();  // Convert rad/s to dps
+
+		// Ackerman Multipliers
+
+		// Calculate multipliers based on Ackerman steering correction
+		local leftMultiplier  = 1.0;
+		local rightMultiplier = 1.0;
+
+		if (Ackerman eq BoolState.On) {
+			// Change reference speed for left and right based on steering angle
+			local kappa = Sensors.Chassis.curvature * Autonomous.Acceleration.AckermanMultiplier;
+			leftMultiplier  = 1 / (1 - kappa * Constants.trackWidth/2);
+			rightMultiplier = 1 / (1 + kappa * Constants.trackWidth/2);
+		}
+		
+		local autonomousTorqueMultiplier = 1.0;
+		
+		// Check if we are requesting autonomous regen instead
+		if (Regen.isActive eq BoolState.On) {
+			
+			//Setting Variables 
+			local currentSpeed = Sensors.Chassis.kalmanSpeed; //current speed
+			local targetSpeed = Limit.Min(Autonomous.IO.velocityRequest, 0.0); //target speed
+			local deceleration = 0.0;  //deceleration rate
+			local forceReq = 0.0; //force required to slow down
+			local torqueReq = 0.0; //maximum torque avaliable to slow down
+			local mass = 269; //weight of the car
+			local maxTorque = 29.1; //max regen torque available	
+			
+			//Finding deceleration required 
+			deceleration = (targetSpeed*targetSpeed - currentSpeed*currentSpeed) / -Limit.Min(2*Autonomous.Acceleration.Regen.MaxDistance, 0.01);
+			
+			//Finding Force required to slow down 
+			forceReq = deceleration * mass; 
+			
+			//Converting force to Nm
+			torqueReq = forceReq * Constants.wheelRadius / Constants.gearRatio;
+			torqueReq = torqueReq / maxTorque; 
+
+			//Converting force to a brake position value
+			if (Autonomous.Acceleration.Regen.ConstantRegen neq Mode Enumeration.Enabled) {
+				autonomousTorqueMultiplier = Limit.Range(torqueReq, 0.0, 1.0); 
+			}
+		}
+
+		// Turn autonomous regen off only after we have met our target speed
+		if (Autonomous.IO.velocityRequest >= Sensors.Chassis.kalmanSpeed)
+		{
+			autonomousRegenState = BoolState.Off;
+		}
+
+		// Set torque requests based on torque limit
+		FLtorqueRequest = FLtorqueRequest * autonomousTorqueMultiplier;
+		FRtorqueRequest = FRtorqueRequest * autonomousTorqueMultiplier;
+		RLtorqueRequest = RLtorqueRequest * autonomousTorqueMultiplier;
+		RRtorqueRequest = RRtorqueRequest * autonomousTorqueMultiplier;
+		
+		// Set target velocity requests
+		FLTargetVelocity = Limit.Max(FLTargetVelocity, velocityRequest * leftMultiplier);
+		FRTargetVelocity = Limit.Max(FRTargetVelocity, velocityRequest * rightMultiplier);
+		RLTargetVelocity = Limit.Max(RLTargetVelocity, velocityRequest * leftMultiplier);
+		RRTargetVelocity = Limit.Max(RRTargetVelocity, velocityRequest * rightMultiplier);	
+	} else {
+		// Set torque requests to 0
+		FLtorqueRequest = 0;
+		FRtorqueRequest = 0;
+		RLtorqueRequest = 0;
+		RRtorqueRequest = 0;
+		
+		// Set target velocity requests to 0
+		FLTargetVelocity = 0;
+		FRTargetVelocity = 0;
+		RLTargetVelocity = 0;
+		RRTargetVelocity = 0;	
+	}
+}
+
+//------------------------------------------------------------------------------
+// Accel Launch Control
+//------------------------------------------------------------------------------
+
+if (mode eq Accel.Mode) {
+	// This is a launch control mode
+	FLtorqueRequest *= Accel.frontAxleTorque;
+	FRtorqueRequest *= Accel.frontAxleTorque;
+	RLtorqueRequest *= Accel.rearAxleTorque;
+	RRtorqueRequest *= Accel.rearAxleTorque;
+}
+
+//------------------------------------------------------------------------------
+// Requests to Inverters 
+//------------------------------------------------------------------------------
+// Clip torque requests to be within the torque limit
+// We also don't allow torque requests to be 0, as this tells the inverter to
+// use whatever torque it wants to reach the target velocity
+// Limit to a minimum of 0.001 = 0.1% torque
+FLtorqueRequest = Limit.Range(FLtorqueRequest, 0.001, FLtorqueLimit);
+FRtorqueRequest = Limit.Range(FRtorqueRequest, 0.001, FRtorqueLimit);
+RLtorqueRequest = Limit.Range(RLtorqueRequest, 0.001, RLtorqueLimit);
+RRtorqueRequest = Limit.Range(RRtorqueRequest, 0.001, RRtorqueLimit);
+// If regen, send negative torque requests
+if (Regen.isActive eq BoolState.On) {
+	FLtorqueRequest *= -1.0;
+	FRtorqueRequest *= -1.0;
+	RLtorqueRequest *= -1.0;
+	RRtorqueRequest *= -1.0;
+}
+
+// Send torque requests to inverters
+// These will be read by Ptrain code, which applies derating and sends to
+// inverters
+FL.torqueRequest = FLtorqueRequest;
+FR.torqueRequest = FRtorqueRequest;
+RL.torqueRequest = RLtorqueRequest;
+RR.torqueRequest = RRtorqueRequest;
+
+// Send target velocity requests to inverters
+// Limited to be under speed limit. (remember all values here are in deg/s)
+// We also limit to a minimum of 1 deg/s = 0.167 rpm.
+local maxSpeed = SpeedLimit;
+if (mode eq Endurance.Mode) {maxSpeed = Endurance.SpeedLimit;}
+
+FL.targetVelocity = Limit.Range(FLTargetVelocity, 1.0, maxSpeed);
+FR.targetVelocity = Limit.Range(FRTargetVelocity, 1.0, maxSpeed);
+RL.targetVelocity = Limit.Range(RLTargetVelocity, 1.0, maxSpeed);
+RR.targetVelocity = Limit.Range(RRTargetVelocity, 1.0, maxSpeed);
+
+// Save torque limit values to channels
+FL.torqueLimit = FLtorqueLimit;
+FR.torqueLimit = FRtorqueLimit;
+RL.torqueLimit = RLtorqueLimit;
+RR.torqueLimit = RRtorqueLimit;
+
+	/*==============================================================================
+	 *	
+	 *                    			Tyre Model
+	 *
+	 *  This script is part of the vehicle model that provides tyre limits to 
+	 *  torque distribution, estimating the available forces available at the tyre
+	 *  to actuate the desired yaw Moment.
+	 *                            
+	 *	    				     Fx               _                 
+	 *	    				     |            _ /`               
+	 *	    				     |         _/`                         
+	 *	    				     |      _/`                        
+	 *	    				     |    _/`                        
+	 *     					     |   /                         
+	 *     					     | /`                               
+	 *	   					     +-----------------> Fz              
+	 *	
+	 *	Tyre Model:
+	 *  -----------
+	 *	This script calculates the normal load on all tyres based on simple load 
+	 *  transfer and downforce formulas.
+	 *	We use a pacejka magic formula with Goody values (change when we go hoosier o_0)
+	 *	The tyres longitudinal grip limit is then calculated and converted to a 
+	 *	torque to be consistent with the rest of the VC.
+	 *  All units are in SI. [N, m]
+	 *
+	 *  Returns:
+	 *  --------
+	 *  FLtyreTorqueLimit : float
+	 *      Estimated max possible torque from the tyre
+	 *
+	 *  FRtyreTorqueLimit : float
+	 *     Estimated max possible torque from the tyre
+	 *
+	 *  RLtyreTorqueLimit : float
+	 *     Estimated max possible torque from the tyre
+	 *
+	 *  RRtyreTorqueLimit : float
+	 *     Estimated max possible torque from the tyre
+	 *	
+	 *============================================================================*/
+
+	//------------------------------------------------------------------------------
+	// Sensor + Car Data
+	//------------------------------------------------------------------------------
+	local speed = Sensors.Chassis.kalmanSpeed;
+	local latG  = Sensors.IMU.latG;
+	local longG = Sensors.IMU.longG;
+
+	//------------------------------------------------------------------------------
+	// Downforce
+	//------------------------------------------------------------------------------
+
+	local downforce = 0.5 * Constants.rho * Calculate.Power(speed,2.0) * Constants.cLA;
+
+	//------------------------------------------------------------------------------
+	// Load Transfer
+	//------------------------------------------------------------------------------
+
+	// If IMU fault, set load transfer to 0, so this will not affect the torque 
+	// multipliers
+	local latLT = 0.0;
+	local longLT = 0.0;
+	if (Sensors.IMU.fault neq IMUDiagnostic.Fault) {
+		// Calculate Load Transfer & Apply Scaling 
+		latLT = (latG * Constants.massWdriver * Constants.cogz / Constants.trackWidth);
+		longLT = (longG * Constants.massWdriver * Constants.cogz / Constants.wheelBase);
+	} else if (Sensors.Chassis.Steering.diagnostic eq SteeringDiagnostic.OK) {
+		// Lat G estimation if Steering is OK
+		latLT = (Sensors.Chassis.kalmanSpeed*Sensors.Chassis.Steering.curvature * Constants.massWdriver * Constants.cogz / Constants.trackWidth);
+	}
+
+	//  Load transfer to each tyre
+	//  Car Load Transfer + Aero Load + mass
+	//  If negative load on a corner clip to 0N
+
+	local FLFn = (0.5 * (latLT - longLT));
+	FLFn += (0.5 * Constants.aeroBalance * downforce); 
+	FLFn += (0.5 * Constants.massWdriver * 9.81 * Constants.frontWeightBalance);
+	FL.Fn  = Limit.Min(FLFn, 0.0);
+
+	local FRFn = (0.5 * (-latLT - longLT));
+	FRFn += (0.5 * Constants.aeroBalance * downforce);
+	FRFn += (0.5 * Constants.massWdriver * 9.81 * Constants.frontWeightBalance);
+	FR.Fn  = Limit.Min(FRFn, 0.0);
+
+	local RLFn = (0.5 * (latLT + longLT));
+	RLFn += (0.5 * (1.0 - Constants.aeroBalance) * downforce);
+	RLFn += (0.5 * Constants.massWdriver * 9.81 * (1.0 - Constants.frontWeightBalance));
+	RL.Fn  = Limit.Min(RLFn, 0.0);
+
+	local RRFn = (0.5 * (-latLT + longLT));
+	RRFn += (0.5 * (1.0 - Constants.aeroBalance) * downforce);
+	RRFn += (0.5 * Constants.massWdriver * 9.81 * (1.0 - Constants.frontWeightBalance));
+	RR.Fn  = Limit.Min(RRFn, 0.0);
+
+
+	//------------------------------------------------------------------------------
+	// Cornering Stiffness
+	//------------------------------------------------------------------------------
+	//  Assume linear region (6 deg slip angle) of tyres
+	kcF = Calculate.Max(0.0, (-0.000097656 * Calculate.Power(FL.Fn,2.0) + 0.8039 * FL.Fn - 5.7388) +  (-0.000097656 * Calculate.Power(FR.Fn,2.0) + 0.8039 * FR.Fn - 5.7388));
+	kcR = Calculate.Max(0.0, (-0.000097656 * Calculate.Power(RL.Fn,2.0) + 0.8039 * RL.Fn - 5.7388) +  (-0.000097656 * Calculate.Power(RR.Fn,2.0) + 0.8039 * RR.Fn - 5.7388));
+
+	//------------------------------------------------------------------------------
+	// Tyre Forces 
+	//------------------------------------------------------------------------------
+	//  Calculate the max Fx for each tyre, using magic formula
+	//local slipRatioF = Controller.LowLevelControls.SlipControl.frontSlip + Controller.LowLevelControls.SlipControl.slipControlF;
+	//local slipRatioR = Controller.LowLevelControls.SlipControl.rearSlip + Controller.LowLevelControls.SlipControl.slipControlR;
+	//local camber = 0.0;
+	//local pressure = 82.7371; // 12 PSI
+	//local fzFL = FL.Fn;
+	//local fzFR = FR.Fn;
+	//local fzRL = RL.Fn;
+	//local fzRR = RR.Fn;
+
+	// --- Define Pacejka constants ---
+	// Nominal values
+	//local fz0 = 1102.0;
+	//local p0 = 92.21;
+	// PX params
+	//local pCx1 = 1.8646;
+	//local pDx1 = 2.1514;
+	//local pDx2 = -0.0854;
+	//local pDx3 = -9.8776;
+	//local pEx1 = 0.2614;
+	//local pEx2 = -0.4449;
+	//local pEx3 = 0.8197;
+	//local pEx4 = 1.3313;
+	//local pKx1 = 37.1281;
+	//local pKx2 = 0.0021;
+	//local pKx3 = -0.1200;
+	//local ppx1 = -1.3907;
+	//local ppx2 = -3.0268;
+	//local ppx3 = -0.8969;
+	//local ppx4 = 0.0;
+
+	// --- Calculate terms ---
+	//local gS = Calculate.FastSin(camber*Calculate.PI()/180.0);
+	//local dpi = (pressure - p0) / p0;
+
+	//local dfzFL = (fzFL - fz0) / fz0;
+	//local dfzFR = (fzFR - fz0) / fz0;
+	//local dfzRL = (fzRL - fz0) / fz0;
+	//local dfzRR = (fzRR - fz0) / fz0;
+
+	// --- Stiffness & Shape factors ---
+	//local muxFL = (pDx1 + pDx2 * dfzFL) * (1 + ppx3 * dpi + ppx4 * dpi * dpi) * (1 - pDx3 * gS * gS);
+	//local muxFR = (pDx1 + pDx2 * dfzFR) * (1 + ppx3 * dpi + ppx4 * dpi * dpi) * (1 - pDx3 * gS * gS);
+	//local muxRL = (pDx1 + pDx2 * dfzRL) * (1 + ppx3 * dpi + ppx4 * dpi * dpi) * (1 - pDx3 * gS * gS);
+	//local muxRR = (pDx1 + pDx2 * dfzRR) * (1 + ppx3 * dpi + ppx4 * dpi * dpi) * (1 - pDx3 * gS * gS);
+
+	//local DxFL  = muxFL * fzFL;
+	//local DxFR  = muxFR * fzFR;
+	//local DxRL  = muxRL * fzRL;
+	//local DxRR  = muxRR * fzRR;
+
+	//local KxkFL = fzFL * (pKx1 + pKx2 * dfzFL) * Calculate.Power(2.71, (pKx3 * dfzFL)) * (1 + ppx1 * dpi + ppx2 * dpi * dpi);
+	//local KxkFR = fzFR * (pKx1 + pKx2 * dfzFR) * Calculate.Power(2.71, (pKx3 * dfzFR)) * (1 + ppx1 * dpi + ppx2 * dpi * dpi);
+	//local KxkRL = fzRL * (pKx1 + pKx2 * dfzRL) * Calculate.Power(2.71, (pKx3 * dfzRL)) * (1 + ppx1 * dpi + ppx2 * dpi * dpi);
+	//local KxkRR = fzRR * (pKx1 + pKx2 * dfzRR) * Calculate.Power(2.71, (pKx3 * dfzRR)) * (1 + ppx1 * dpi + ppx2 * dpi * dpi);
+
+	//local BxFL  = KxkFL / (pCx1 * DxFL);
+	//local BxFR  = KxkFR / (pCx1 * DxFR);
+	//local BxRL  = KxkRL / (pCx1 * DxRL);
+	//local BxRR  = KxkRR / (pCx1 * DxRR);
+
+	// --- Curvature Factors ---
+	//local ExFL = (pEx1 + pEx2 * dfzFL + pEx3 * dfzFL * dfzFL) * (1 - pEx4 * Calculate.Min(1.0, Calculate.Max(-1.0, slipRatioF)));
+	//local ExFR = (pEx1 + pEx2 * dfzFR + pEx3 * dfzFR * dfzFR) * (1 - pEx4 * Calculate.Min(1.0, Calculate.Max(-1.0, slipRatioF)));
+	//local ExRL = (pEx1 + pEx2 * dfzRL + pEx3 * dfzRL * dfzRL) * (1 - pEx4 * Calculate.Min(1.0, Calculate.Max(-1.0, slipRatioR)));
+	//local ExRR = (pEx1 + pEx2 * dfzRR + pEx3 * dfzRR * dfzRR) * (1 - pEx4 * Calculate.Min(1.0, Calculate.Max(-1.0, slipRatioR)));
+
+	// --- Long force calculation ---
+	//local phiFL = BxFL * slipRatioF;
+	//local phiFR = BxFR * slipRatioF;
+	//local phiRL = BxRL * slipRatioR;
+	//local phiRR = BxRR * slipRatioR;
+
+	// Split up the following into four equations to nicely include atan aproximation
+	//local atanPhiFL = (Calculate.PI()/4.0) * phiFL - (phiFL * (Calculate.Absolute(phiFL) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(phiFL)));
+	//local atanPhiFR = (Calculate.PI()/4.0) * phiFR - (phiFR * (Calculate.Absolute(phiFR) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(phiFR)));
+	//local atanPhiRL = (Calculate.PI()/4.0) * phiRL - (phiRL * (Calculate.Absolute(phiRL) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(phiRL)));
+	//local atanPhiRR = (Calculate.PI()/4.0) * phiRR - (phiRR * (Calculate.Absolute(phiRR) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(phiRR)));
+
+	//local termFL = phiFL - ExFL * (phiFL - atanPhiFL);
+	//local termFR = phiFR - ExFR * (phiFR - atanPhiFR);
+	//local termRL = phiRL - ExRL * (phiRL - atanPhiRL);
+	//local termRR = phiRR - ExRR * (phiRR - atanPhiRR);
+
+	//local atanTermFL = (Calculate.PI()/4.0) * termFL - (termFL * (Calculate.Absolute(termFL) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(termFL)));
+	//local atanTermFR = (Calculate.PI()/4.0) * termFR - (termFR * (Calculate.Absolute(termFR) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(termFR)));
+	//local atanTermRL = (Calculate.PI()/4.0) * termRL - (termRL * (Calculate.Absolute(termRL) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(termRL)));
+	//local atanTermRR = (Calculate.PI()/4.0) * termRR - (termRR * (Calculate.Absolute(termRR) - 1.0) * (0.2447 + 0.0663 * Calculate.Absolute(termRR)));
+
+	// Final Wheel Long Forces :D
+	//local fx0FL = DxFL * Calculate.FastSin(pCx1 * atanTermFL);
+	//local fx0FR = DxFR * Calculate.FastSin(pCx1 * atanTermFR);
+	//local fx0RL = DxRL * Calculate.FastSin(pCx1 * atanTermRL);
+	//local fx0RR = DxRR * Calculate.FastSin(pCx1 * atanTermRR);
+
+	// Save to wheel for logging
+	//FL.Fx = fx0FL;
+	//FR.Fx = fx0FR;
+	//RL.Fx = fx0RL;
+	//RR.Fx = fx0RR;
+	local mu = muLong;
+	FL.Fx = 2000 + mu;
+	FR.Fx = 2000;
+	RL.Fx = 2000;
+	RR.Fx = 2000;
+
+	// --- Convert to motor torque limits
+	// Hack Fix here until I can address slip ratio errors in this script.
+	//FL.gripLimit = Calculate.Max(30.0, muLong * Calculate.Absolute(fx0FL) * Constants.wheelRadius / Constants.gearRatio);
+	//FR.gripLimit = Calculate.Max(30.0,muLong * Calculate.Absolute(fx0FR) * Constants.wheelRadius / Constants.gearRatio);
+	//RL.gripLimit = Calculate.Max(30.0,muLong * Calculate.Absolute(fx0RL) * Constants.wheelRadius / Constants.gearRatio);
+	//RR.gripLimit = Calculate.Max(30.0,muLong * Calculate.Absolute(fx0RR) * Constants.wheelRadius / Constants.gearRatio);
+	FL.gripLimit = 30.0;
+	FR.gripLimit = 30.0;
+	RL.gripLimit = 30.0;
+	RR.gripLimit = 30.0;
+
+    /*==============================================================================
+ *	
+ *                            High Level Controller
+ *	                         ----------------------
+ *	 This script creates a desired yaw moment to pass to the low level controller
+ *	 in order to manipulate the vehicle's attitude to a given reference (target)
+ *	 yaw rate. It has both a feedback response to error, and a feed forward
+ *   response to driver inputs. It also has a stability sub-controller, which
+ *   further manipulates the desired yaw moment to correct extreme side slip.
+ *
+ *	Parameters:
+ *	-----------
+ * 	Feed Back
+ *	- Kp   (Proportional gain)
+ *	- Ki   (Integral gain)
+ *  - Kd   (Integral decay factor)
+ *
+ *  Feed Forward
+ *  - Kff  (Feed forward gain)
+ *
+ *  Stability Control
+ *  - betaThreshold
+ *  - Ks   (Stability control gain)
+ *
+ *	Inputs:
+ *	-----------
+ *	- Kalman Speed
+ *  - Throttle Pos
+ *  - Yaw Rate
+ *  - Steering Angle
+ *  - Lat G
+ *  - Beta (chassis slip angle)
+ *  - Yaw reference (Target yaw rate)
+ *  - Beta Reference (Chassis slip smoothed)
+ *  
+ *	Outputs:
+ *	-----------
+ *  Primary Output:
+ *  - Desired Mz
+ *  
+ *  Secondary Outputs:
+ *  - YawRate Error
+ *  - Yaw Error Integral
+ *  - Feedback Controller Response
+ *  - Feedforward Controller Response
+ *  - kBeta (Side slip activation Factor)
+ *  - fIy (Transient Indicator)
+ *  - kThrottle (Throttle authority)
+ *============================================================================*/
+
+//------------------------------------------------------------------------------
+// Lat G Control
+//------------------------------------------------------------------------------
+// No lateral torque distribution if IMU is faulty
+local momentEnabled = 0.0;
+if ((Sensors.IMU.fault neq IMUDiagnostic.Fault) and (Sensors.Chassis.Steering.diagnostic neq SteeringDiagnostic.Fault)) {
+	momentEnabled = 1;
+}
+
+//------------------------------------------------------------------------------
+// Yaw Rate Control (YRC)
+//------------------------------------------------------------------------------
+local Mz = 0.0;
+
+// === Total Desired Yaw Moment ===
+
+// --- Instantaneous Error ---
+// Convert target yaw rate from radians to degrees 
+local error = 0.0;
+if (Sensors.IMU.fault neq IMUDiagnostic.Fault) {
+	// Additional fault detection to prevent Integral Error buildup
+	error = Controller.ReferenceGen.yawRef - Sensors.IMU.yawRate; 
+}
+yawError = error;
+
+// --- Integral Error ---
+// Initial integral addition = area under error over timestep
+local integralError = yawError * (1.0/Constants.controllerFreq);
+// Leak integral (Anti-windup)
+local maxIntegral = 30.0; 
+Feedback.yawErrorIntegral = Calculate.Max(-maxIntegral, Calculate.Min(maxIntegral, (1.0 - Feedback.Kd) * Feedback.yawErrorIntegral + integralError));
+
+// === Feedback Component ===
+local Mzfb = (Feedback.Kp * yawError) + (Feedback.Ki * Feedback.yawErrorIntegral);
+
+// === Feedforward Component ===
+// Instantaneous response with a feedforward gain
+local Mzff = 0.0;
+
+Mzff = Feedforward.Kff * Sensors.Chassis.Steering.angle * Sensors.Chassis.kalmanSpeed / Constants.wheelBase;
+
+
+// --- Iy (Transient state indicator) ---
+local fnIy = 0.0;
+
+local Iy = yawError * Calculate.PI()/180.0; // Yaw error rad conversion
+local scaleFactor = c1*Calculate.Absolute(Iy)-c2;
+local hyperbolicTan = (Calculate.Power(2.71, scaleFactor) - Calculate.Power(2.71, -scaleFactor))/(Calculate.Power(2.71, scaleFactor) + Calculate.Power(2.71, -scaleFactor));
+fnIy = 1.0 - (0.5 * (1.0-hyperbolicTan));
+
+// === Disabled Iy ===
+//fIy = fnIy;
+fIy = 1 + 0*fnIy;
+
+//------------------------------------------------------------------------------
+// Sideslip Controller
+//------------------------------------------------------------------------------
+local beta = 0.0;
+beta = -(Calculate.Absolute(Sensors.IMU.latG) * Sensors.IMU.yawRate * Constants.wheelBase) / Sensors.Chassis.kalmanSpeed;
+
+// === Calculate Activation Factor ===
+// Compares |beta| to a threshold & maximum, interpolates 0->1 authority between them.
+SideslipControl.kBeta = Calculate.Max(0.0, Calculate.Min(1.0, (Calculate.Absolute(beta) - SideslipControl.betaThreshold) / (Controller.ReferenceGen.betaMax - SideslipControl.betaThreshold)));
+
+// Calculate opposing correction response
+local correction = SideslipControl.kBeta * beta * SideslipControl.Ks * (beta - Controller.ReferenceGen.betaRef);
+if (Mzff * correction > 0.0) {
+	correction = -correction;
+}
+
+// === Disabled sideslip correction ===
+correction = 0;
+
+// Apply correction
+Mzff = Mzff - correction;
+	
+
+//------------------------------------------------------------------------------
+// Moment Creation
+//------------------------------------------------------------------------------
+// Transient feedforward response + Steady state feedback
+Mz = (fIy * Mzff + Mzfb);
+
+//------------------------------------------------------------------------------
+// Longitudinal Request Controller
+//------------------------------------------------------------------------------
+// We want scale long request by pedal input, both accel & braking
+local pedalPos = Calculate.Max(Sensors.APPS.throttlePosition, Sensors.Brakes.brakePosition);
+
+if (pedalPos > LongRequestControl.aThresh) {
+	// Scale between 0 to a max reduction amount (<=1), after pedal pos threshold is reached
+	LongRequestControl.kThrottle = LongRequestControl.reductionLim * Calculate.Power(Calculate.Absolute((pedalPos - LongRequestControl.aThresh) / (1 - LongRequestControl.aThresh)),LongRequestControl.linearity);
+	
+	//Apply Reduction using kThrottle at a % reduction
+	Mz = Mz * (1 - LongRequestControl.kThrottle);
+}
+	
+//------------------------------------------------------------------------------
+// Safety deadzone
+//------------------------------------------------------------------------------
+// === Ramping from low yaw error and low velocity ===
+// --- Ramp from 0 to 1x Mz instead of a step input ---
+local dZ = 0.5; // Deadzone value
+local exp = 1.7; // Exponential
+local ramp = Calculate.max(0.0, Calculate.Min(1.0, (0.1 * Calculate.Absolute(Sensors.Chassis.Steering.angle) - dZ) / (1.0 - dZ)));
+
+if (Calculate.Absolute(Sensors.Chassis.Steering.angle) < 5 or Sensors.Chassis.kalmanSpeed < 1.39) {
+	Mz = 0.0;
+} else if (Calculate.Absolute(Sensors.Chassis.Steering.angle) < 10 or Sensors.Chassis.kalmanSpeed < 2.78) {
+	Mz = Calculate.Power(ramp,exp) * Mz;
+}
+
+//------------------------------------------------------------------------------
+// Total Desired Yaw Moment
+//------------------------------------------------------------------------------
+// Outputs a desired yaw moment in motor torque (Nm)
+desiredMz = Mz * momentEnabled;
+Feedback.Mzfb = Mzfb;
+Feedforward.Mzff = Mzff;
+
+/*==============================================================================
+  	
+                              Torque Distribution
+ 	
+  	Distributes torque to achieve desired yaw moment + longitudinal force 
+    within constraints of tyres and powertrain 
+ 	
+ ============================================================================*/
+
+//------------------------------------------------------------------------------
+// Local Requests
+//------------------------------------------------------------------------------
+// Local variables for simplification & modification
+// The actual requests are sent at the very end of the code.
+local FLtorqueRequest = 0.0;
+local FRtorqueRequest = 0.0;
+local RLtorqueRequest = 0.0;
+local RRtorqueRequest = 0.0;
+
+local desiredMz = Controller.HighLevelControls.desiredMz;
+
+//------------------------------------------------------------------------------
+// Left / Right Distribution
+//------------------------------------------------------------------------------
+ 
+// Initialise Torque Requests
+local LeftRequest = 0.0;
+local RightRequest = 0.0;
+
+// Reduce to 2 side problem, starting from limits and bleeding to hit MzDesired
+
+local LeftLim = Constraints.FLtorqueLimit + Constraints.RLtorqueLimit;
+local RightLim = Constraints.FRtorqueLimit + Constraints.RRtorqueLimit;
+local initialYMrequest = LeftLim - RightLim;
+
+if (regenOn eq BoolState.On) {
+	// Flip for later regen torque flips
+	desiredMz = -desiredMz;
+}
+
+local YMdelta = initialYMrequest - desiredMz;
+
+// === Initial L/R distribution ===
+
+//  --- Bleed inside torque to reach desiredMz ---
+if (YMdelta > 0.0) {
+    LeftRequest  = Calculate.Max(LeftLim - YMdelta, (Controller.Regen.Enable eq BoolState.On ? -LeftLim : 0.0));
+    RightRequest = RightLim;
+} else {
+    LeftRequest  = LeftLim;
+    RightRequest = Calculate.Max(RightLim + YMdelta, (Controller.Regen.Enable eq BoolState.On ? -RightLim : 0.0));
+}
+
+Distribution.initialTotalRequest = LeftRequest + RightRequest;
+Distribution.initialBleed = Distribution.initialTotalRequest - Constraints.torqueTarget;
+
+// --- Scale down to driver torque request ---
+if (Distribution.initialBleed > 0.0) {
+	LeftRequest  = Calculate.Max(LeftRequest  - Distribution.initialBleed/2, (Controller.Regen.Enable eq BoolState.On ? -LeftLim : 0.0));
+    RightRequest = Calculate.Max(RightRequest - Distribution.initialBleed/2, (Controller.Regen.Enable eq BoolState.On ? -RightLim : 0.0));
+}
+
+//------------------------------------------------------------------------------
+// (Auscomp) Rules Required Torque Constraint
+//------------------------------------------------------------------------------
+// Auscomp wont like us adding torque on the outside off throttle (rules legal btw)
+// So we must constrain the positive torque to 0 whilst not on throttle
+// We also must do some low throttle scaling to prevent step jumps
+
+if (Constraints.ConstrainTorque eq BoolState.On) {
+	//Length of APPS to get back to full long request
+	local transitionZone = 0.15; 
+	// Here OPD.TP always records accurate Throttle Pos logic
+	if (Controller.OnePedalDrive.ThrottlePos25 < transitionZone) {
+		
+		// Transition from full constraint to no constraint
+		local throttleTransitionFactor = (transitionZone - Controller.OnePedalDrive.ThrottlePos25) / transitionZone;
+		
+		// --- Case low throttle ---
+		if (Controller.OnePedalDrive.ThrottlePos25 > 0) {
+		    // Left Turn
+			if (YMdelta > 0) {
+				// Reduce torque within low throttle range
+				local maxAllowedTorque = RightRequest * (1 - throttleTransitionFactor);
+				
+				// Reallocate stolen torque to keep desiredMz (Up to grip lims)
+				local rebalanceDelta = RightRequest - maxAllowedTorque;
+				RightRequest = maxAllowedTorque;
+				LeftRequest = Calculate.Min(LeftLim, Calculate.Max(-LeftLim, LeftRequest-rebalanceDelta));
+				
+			// Right Turn
+			} else {
+				// Reduce torque within low throttle range
+				local maxAllowedTorque = LeftRequest * (1 - throttleTransitionFactor);
+				
+				// Reallocate stolen torque to keep desiredMz (Up to grip lims)
+				local rebalanceDelta = LeftRequest - maxAllowedTorque;
+				LeftRequest = maxAllowedTorque;
+				RightRequest = Calculate.Min(LeftLim, Calculate.Max(-RightLim, RightRequest-rebalanceDelta));
+			}
+		
+		// Case full off throttle	
+		} else {
+			// Coasting (Clip to max 0 torque, limit to max regen)
+			if (regenOn neq BoolState.On) {
+				LeftRequest = Calculate.Min(0.0, Calculate.Max(-LeftLim, 2.0 * LeftRequest));
+				RightRequest = Calculate.Min(0.0, Calculate.Max(-RightLim, 2.0 * RightRequest));
+			
+			// On brakes (Clip from other side as torques get inverted *-1)
+			} else {
+				LeftRequest = Calculate.Min(LeftLim, Calculate.Max(0.0, LeftRequest));
+				RightRequest = Calculate.Min(RightLim, Calculate.Max(0.0, RightRequest));
+			}
+		}
+	}
+}
+
+//------------------------------------------------------------------------------
+// Front / Rear Distribution
+//------------------------------------------------------------------------------
+FLtorqueRequest = LeftRequest/LeftLim*Constraints.FLtorqueLimit;
+FRtorqueRequest = RightRequest/RightLim*Constraints.FRtorqueLimit;
+RLtorqueRequest = LeftRequest/LeftLim*Constraints.RLtorqueLimit;
+RRtorqueRequest = RightRequest/RightLim*Constraints.RRtorqueLimit;
+
+
+//------------------------------------------------------------------------------
+// Autonomous Requests
+//------------------------------------------------------------------------------
+// AS passes us an accel request, which we convert to a torque request
+// We will maintain same slip control functions as driven
+if (Autonomous.Mission neq Autonomous Mission.Manual Driving) {
+	if (Autonomous.DataLogger.DvSystemStatus.asState eq Autonomous State.AS Driving and
+	Autonomous.r2dPause.Remaining() <= 0.0) {
+		// Get total request so far (AS scales from total limit)
+		local vectoredTorque = FLtorqueRequest + FRtorqueRequest + RLtorqueRequest + RRtorqueRequest;
+	
+		// Read accel request from autonomous IO
+		local accelRequest = Calculate.Absolute(Autonomous.IO.accelRequest); // [m/s^2]
+		
+		// Convert to total longitudinal force (f = ma)
+		local forceRequest = (Constants.massWdriver-70.0) * accelRequest;
+		
+		// Convert to wheel torque nm
+		local ASTorqueRequest = (forceRequest * Constants.wheelRadius) / Constants.gearRatio;
+		// Ensure is within safe limits
+		ASTorqueRequest = Calculate.Min(Constraints.totalTorqueLimit, Calculate.Max(-Constraints.totalTorqueLimit, ASTorqueRequest));
+		
+		// Determine rescale multiplier to achieve desired accel
+		local autonomousTorqueMultiplier = (vectoredTorque >= 0.0) ? ASTorqueRequest / vectoredTorque : 0.0;
+		
+		// Apply scaling
+		FLtorqueRequest = FLtorqueRequest * autonomousTorqueMultiplier;
+		FRtorqueRequest = FRtorqueRequest * autonomousTorqueMultiplier;
+		RLtorqueRequest = RLtorqueRequest * autonomousTorqueMultiplier;
+		RRtorqueRequest = RRtorqueRequest * autonomousTorqueMultiplier;
+		
+		// Clamp to wheel limits (Min 0 for AS)
+		FLtorqueRequest = Calculate.Min(Constraints.FLtorqueLimit, Calculate.Max(0.0, FLtorqueRequest));
+		FRtorqueRequest = Calculate.Min(Constraints.FRtorqueLimit, Calculate.Max(0.0, FRtorqueRequest));
+		RLtorqueRequest = Calculate.Min(Constraints.RLtorqueLimit, Calculate.Max(0.0, RLtorqueRequest));
+		RRtorqueRequest = Calculate.Min(Constraints.RRtorqueLimit, Calculate.Max(0.0, RRtorqueRequest));
+		
+	} else {
+		// Set torque requests to 0
+		FLtorqueRequest = 0.0;
+		FRtorqueRequest = 0.0;
+		RLtorqueRequest = 0.0;
+		RRtorqueRequest = 0.0;
+	}
+}
+
+//------------------------------------------------------------------------------
+// Accel Launch Control
+//------------------------------------------------------------------------------
+
+if (VCMode eq Controller.Accel.Mode) {
+	// This is a launch control mode
+	FLtorqueRequest *= Controller.Accel.frontAxleTorque;
+	FRtorqueRequest *= Controller.Accel.frontAxleTorque;
+	RLtorqueRequest *= Controller.Accel.rearAxleTorque;
+	RRtorqueRequest *= Controller.Accel.rearAxleTorque;
+}
+
+//------------------------------------------------------------------------------
+// Limited Slip Dif
+//------------------------------------------------------------------------------
+// This is a redundancy implementation -Torque multiplier based on wheel speed diff
+if (LSD.LSDEnable eq BoolState.On and (Controller.DrivingMode eq Controller.drivingMode.RWD)) {
+
+	local FLWheelSpeed = Tractive System.Inverter.Rear.Left.velocityReal;
+	local FRWheelSpeed = Tractive System.Inverter.Rear.Right.velocityReal;
+	local RLWheelSpeed = Tractive System.Inverter.Rear.Left.velocityReal;
+	local RRWheelSpeed = Tractive System.Inverter.Rear.Right.velocityReal;
+	
+	// local AvgWheelSpeed = (FLWheelSpeed + FRWheelSpeed + RLWheelSpeed + RRWheelSpeed)/4.0;
+	
+	// --- Rear axle LSD ---
+	if (Controller.DrivingMode eq Controller.drivingMode.RWD or
+        Controller.DrivingMode eq Controller.drivingMode.AWD) {
+
+        local RearDelta = RLWheelSpeed - RRWheelSpeed;
+        LSD.deltaOmega = RearDelta;
+        local RearMult  = 1.0;
+
+        if (RearDelta > LSD.LSDLimit) {
+            RearMult = 1.0 - (RearDelta - LSD.LSDLimit) / LSD.LSDRamp;
+        } else if (RearDelta < -LSD.LSDLimit) {
+            RearMult = 1.0 + (-RearDelta - LSD.LSDLimit) / LSD.LSDRamp;
+        }
+
+        RearMult = Limit.Range(RearMult, 0.0, 2.0);
+        LSD.torqueMultiplier = RearMult;
+
+        RLtorqueRequest *= RearMult;
+        RRtorqueRequest *= (2.0 - RearMult);
+    }
+    
+    // --- Front axle LSD ---
+    if (Controller.DrivingMode eq Controller.drivingMode.FWD or
+        Controller.DrivingMode eq Controller.drivingMode.AWD) {
+
+        local FrontDelta = FLWheelSpeed - FRWheelSpeed;
+        local FrontMult  = 1.0;
+
+        if (FrontDelta > LSD.LSDLimit) {
+            FrontMult = 1.0 - (FrontDelta - LSD.LSDLimit) / LSD.LSDRamp;
+        } else if (FrontDelta < -LSD.LSDLimit) {
+            FrontMult = 1.0 + (-FrontDelta - LSD.LSDLimit) / LSD.LSDRamp;
+        }
+
+        FrontMult = Limit.Range(FrontMult, 0.0, 2.0);
+
+        FLtorqueRequest *= FrontMult;
+        FRtorqueRequest *= (2.0 - FrontMult);
+    }
+}
+
+
+//------------------------------------------------------------------------------
+// Requests to Inverters 
+//------------------------------------------------------------------------------
+// Clip torque requests to be within the torque limit
+// We also don't allow torque requests to be 0, as this tells the inverter to
+// use whatever torque it wants to reach the target velocity
+// Limit to a minimum of 0.001 = 0.1% torque
+FLtorqueRequest = Limit.Range(FLtorqueRequest, 0.001, Constraints.FLtorqueLimit);
+FRtorqueRequest = Limit.Range(FRtorqueRequest, 0.001, Constraints.FRtorqueLimit);
+RLtorqueRequest = Limit.Range(RLtorqueRequest, 0.001, Constraints.RLtorqueLimit);
+RRtorqueRequest = Limit.Range(RRtorqueRequest, 0.001, Constraints.RRtorqueLimit);
+
+// If regen, send negative torque requests
+if (RegenOn eq BoolState.On) {
+	FLtorqueRequest *= -1.0;
+	FRtorqueRequest *= -1.0;
+	RLtorqueRequest *= -1.0;
+	RRtorqueRequest *= -1.0;
+}
+
+// Send torque requests to inverters35
+// These will be read by Ptrain code, which applies derating and sends to
+// inverters
+Distribution.FLtorqueRequest = FLtorqueRequest;
+Distribution.FRtorqueRequest = FRtorqueRequest;
+Distribution.RLtorqueRequest = RLtorqueRequest;
+Distribution.RRtorqueRequest = RRtorqueRequest;
+
+// Log % of tyre torque used as util
+Controller.TyreModel.FL.utilisation = FLtorqueRequest/Constraints.FLtorqueLimit;
+Controller.TyreModel.FR.utilisation = FRtorqueRequest/Constraints.FRtorqueLimit;
+Controller.TyreModel.RL.utilisation = RLtorqueRequest/Constraints.RLtorqueLimit;
+Controller.TyreModel.RR.utilisation = RRtorqueRequest/Constraints.RRtorqueLimit;
+
+Distribution.totalRequest = LeftRequest + RightRequest;
+Distribution.momentRequest = LeftRequest - RightRequest;
+
+/*==============================================================================
+ *
+ *                              Slip Controller
+ *
+ *	
+ *	Slip Ratio Calculation:
+ *	----------------------------
+ *	
+ *	The following code calculates one reference speed per wheel (chassis corner 
+ *  speed in nm), then calculates a desired wheel velocity based on a desired slip 
+ *  ratio from cornering and throttle position
+ *
+ *	Parameters:
+ *	-----------
+ *	
+ *	- RefSpeed: Reference speed calculation mode. Can be:
+ *		- Min Speed: Minimum of wheel speeds
+ *		- Avg Speed: Average of wheel speeds
+ *		- Kalman Speed: Kalman filtered speed from velocity estimation
+ *	
+ *	- Ackerman: Ackerman steering correction
+ *		- On: Left and right reference speeds adjusted based on steering angle
+ *		- Off: Left and right reference speeds are the same
+ *	
+ *============================================================================*/
+
+// For convenience, we define the wheel speeds as shorter variables
+// Remember, these are all in dps
+local FLWheelSpeed = Tractive System.Inverter.Front.Left.velocityReal;
+local FRWheelSpeed = Tractive System.Inverter.Front.Right.velocityReal;
+local RLWheelSpeed = Tractive System.Inverter.Rear.Left.velocityReal;
+local RRWheelSpeed = Tractive System.Inverter.Rear.Right.velocityReal;
+
+//--------------------------------------------------------------------------
+// Chassis Reference Speed Calculation
+//--------------------------------------------------------------------------
+
+// Create a local variable for the chassis reference speed
+local chassisSpeed = 0.0;
+
+// Loop through different modes and set refSpeed accordingly
+if (Controller.RefSpeed eq Reference Speed Enumeration.Min Speed) {
+
+	// Minimum of wheel speeds, based on driving mode
+	local minFront  = Calculate.Min(FLWheelSpeed, FRWheelSpeed);
+	local minRear   = Calculate.Min(RLWheelSpeed, RRWheelSpeed);
+	
+	chassisSpeed = Calculate.Min(minFront, minRear);
+	
+	// FWD and RWD do minimum of that axles only as other
+	// wheel speeds will be 0
+	if (Controller.DrivingMode eq Driving Mode Enumeration.FWD) {
+		chassisSpeed = minFront;
+	} else if (Controller.DrivingMode eq Driving Mode Enumeration.RWD) {
+		chassisSpeed = minRear;
+	}
+
+} else if (Controller.RefSpeed eq Reference Speed Enumeration.Avg Speed) {
+
+	// Average of wheel speeds, based on driving mode
+	chassisSpeed = (FLWheelSpeed + FRWheelSpeed + RLWheelSpeed + RRWheelSpeed) / 4.0;
+	
+	// FWD and RWD do average of that axle only as other
+	// wheel speeds will be 0
+	if (Controller.DrivingMode eq Driving Mode Enumeration.FWD) {
+		chassisSpeed = (FLWheelSpeed + FRWheelSpeed) / 2.0;
+	} else if (Controller.DrivingMode eq Driving Mode Enumeration.RWD) {
+		chassisSpeed = (RLWheelSpeed + RRWheelSpeed) / 2.0;
+	}
+	
+} else if (Controller.RefSpeed eq Reference Speed Enumeration.Kalman Speed) {
+
+	// Kalman filtered speed (converted from m/s to dps)
+	chassisSpeed  = Sensors.Chassis.kalmanSpeed;
+	chassisSpeed *= Constants.gearRatio / Constants.wheelRadius; // Convert to rad/s
+	chassisSpeed *= 180 / Calculate.PI(); // Convert rad/s to dps
+}
+
+// Save chassis reference speed to a channel
+local chassisTorqueSpeed = chassisSpeed;
+
+//--------------------------------------------------------------------------
+// Left and Right Reference Speed Calculation
+//--------------------------------------------------------------------------
+
+// Calculate multipliers based on Ackerman steering correction
+local leftMultiplier  = 1.0;
+local rightMultiplier = 1.0;
+
+
+// Change reference speed for left and right based on steering angle
+local kappa = Sensors.Chassis.curvature;
+leftMultiplier  = 1 / (1 - kappa * Constants.trackWidth/2);
+rightMultiplier = 1 / (1 + kappa * Constants.trackWidth/2);
+
+
+// Individual wheel reference speeds
+// These are saved in deg/s, as this is what motec wants for them to be
+// displayed correctly with untis in i2pro. Unfortunately as we want them in RPM
+// we'll have to convert them back to RPM when we use them in the inverter
+// requests script.
+SlipControl.FLrefSpeed = chassisTorqueSpeed * leftMultiplier;  // dps
+SlipControl.FRrefSpeed = chassisTorqueSpeed * rightMultiplier; // dps
+SlipControl.RLrefSpeed = chassisTorqueSpeed * leftMultiplier;  // dps
+SlipControl.RRrefSpeed = chassisTorqueSpeed * rightMultiplier; // dps
+
+//--------------------------------------------------------------------------
+// Slip Controller
+//--------------------------------------------------------------------------
+// We aim to scale the target slip ratio based on cornering state & driver
+// Long Request, in order to put the tyres in the best window for Fx or Fy.
+
+// For safety, initialse velocities at 0
+local FLTargetVelocity = 0.0;
+local FRTargetVelocity = 0.0;
+local RLTargetVelocity = 0.0;
+local RRTargetVelocity = 0.0;
+
+local maxLatG = 2.5; // (Optimistic) Value from data that we scale off of
+
+// --- Tyre potential needed ---
+// Take ratio of potential cornering capacity
+local cornerFactor = Calculate.Power(Calculate.Absolute(Sensors.IMU.latG)/(9.81*maxLatG), SlipControl.slipControlLinearity);
+
+// --- Throttle Influence to allow for good accel ---
+local throttleFactor = 0.3 + 0.7*Controller.OnePedalDrive.ThrottlePos25; // Allow regen slip off throttle
+
+// --- Slip scaling ---
+local slipTarget = SlipControl.slipRatioMin + (SlipControl.slipRatioMax - SlipControl.slipRatioMin) * (1-cornerFactor)*throttleFactor;
+
+// --- Adjust f/r ---
+SlipControl.frontSlip = slipTarget;
+SlipControl.rearSlip = slipTarget * (1 + SlipControl.frontRearDelta);
+
+// --- Local slip multipliers, signed by torque request ---
+// If torque > 0 (drive)
+// If torque <= 0 (slow)
+
+local FLSign = (Distribution.FLtorqueRequest > 0) ? 1.0 : -1.0;
+local FRSign = (Distribution.FRtorqueRequest > 0) ? 1.0 : -1.0;
+local RLSign = (Distribution.RLtorqueRequest > 0) ? 1.0 : -1.0;
+local RRSign = (Distribution.RRtorqueRequest > 0) ? 1.0 : -1.0;
+
+local FLSlip = 1 + SlipControl.frontSlip * FLSign;
+local FRSlip = 1 + SlipControl.frontSlip * FRSign;
+local RLSlip = 1 + SlipControl.rearSlip  * RLSign;
+local RRSlip = 1 + SlipControl.rearSlip  * RRSign;
+
+//--------------------------------------------------------------------------
+// Wheel velocity targets
+//--------------------------------------------------------------------------
+local maxSpeed = SlipControl.speedLimit;
+
+if ((Controller.SlipControl.Mode eq Speed Control Enumeration.Inverter)
+	and (VCMode neq 0)) {
+	// With inverter side controls, we simply give a target velocity and let
+	// the inverter do the rest. We also target a min rpm for wheels to spin.
+	FLTargetVelocity = Calculate.Max(SlipControl.rpmThreshold, SlipControl.FLrefSpeed * FLSlip);
+	FRTargetVelocity = Calculate.Max(SlipControl.rpmThreshold, SlipControl.FRrefSpeed * FRSlip);
+	RLTargetVelocity = Calculate.Max(SlipControl.rpmThreshold, SlipControl.RLrefSpeed * RLSlip);
+	RRTargetVelocity = Calculate.Max(SlipControl.rpmThreshold, SlipControl.RRrefSpeed * RRSlip);
+}
+
+//------------------------------------------------------------------------------
+// Testfire Mode
+//------------------------------------------------------------------------------
+// In testfire mode, we want to set the target speed to the speed limit
+if (VCMode eq 0) {
+	FLTargetVelocity = maxSpeed;
+	FRTargetVelocity = maxSpeed;
+	RLTargetVelocity = maxSpeed;
+	RRTargetVelocity = maxSpeed;
+}
+
+//------------------------------------------------------------------------------
+// Autonomous Mode
+//------------------------------------------------------------------------------
+if (Autonomous.Mission neq Autonomous Mission.Manual Driving) {
+	if (Autonomous.DataLogger.DvSystemStatus.asState eq Autonomous State.AS Driving and
+	Autonomous.r2dPause.Remaining() <= 0) {
+	// Do nothing
+	} else {
+        // Set target velocity requests to 0
+		FLTargetVelocity = 0.0;
+		FRTargetVelocity = 0.0;
+		RLTargetVelocity = 0.0;
+		RRTargetVelocity = 0.0;	
+    }
+}
+
+
+//------------------------------------------------------------------------------
+// Final Logging
+//------------------------------------------------------------------------------
+
+if (VCMode eq Endurance.Mode) {maxSpeed = Endurance.SpeedLimit;}
+
+SlipControl.FLtargetVelocity = Limit.Range(FLTargetVelocity, 1.0, maxSpeed);
+SlipControl.FRtargetVelocity = Limit.Range(FRTargetVelocity, 1.0, maxSpeed);
+SlipControl.RLtargetVelocity = Limit.Range(RLTargetVelocity, 1.0, maxSpeed);
+SlipControl.RRtargetVelocity = Limit.Range(RRTargetVelocity, 1.0, maxSpeed);
+
+SlipControl.FLslipRatio = SlipControl.frontSlip * FLSign;
+SlipControl.FRslipRatio = SlipControl.frontSlip * FRSign;
+SlipControl.RLslipRatio = SlipControl.rearSlip * RLSign;
+SlipControl.RRslipRatio = SlipControl.rearSlip * RRSign;
+
+/*==============================================================================
+  	
+                         Torque Vectoring Constraints
+ 	
+  	Calculates the total torque limit, as well as individual wheel torque lims
+  	as a function of grip and powertrain limits, as well as regen brake bias.
+  	
+  	Additionally calculates the regenOn condition, and used pedal positions.
+ 	
+ ============================================================================*/
+
+//------------------------------------------------------------------------------
+// Regen Condition
+//------------------------------------------------------------------------------
+
+// Init Channels
+local ThrottlePos = 0.0;
+local brakePos = 0.0;
+local paraTrqLimit = 0.0;
+
+// === Determine if regen can be enabled ===
+local regenEnable = BoolState.Off;
+if (Controller.Regen.Enable eq BoolState.On) {regenEnable = Endurance.regenActive;}             // Set endurace regen enabled
+
+// Check regen conditions
+
+// --- Driven condition ---
+local drivenRegenCondition = Autonomous.Mission eq Autonomous Mission.Manual Driving        // Manual driving
+and (Sensors.Brakes.PressureFront > Sensors.Brakes.BrakePressureStart)                       // Brakes pressed
+and (Sensors.APPS.throttlePosition < 0.05);		                                            // Prioritise APPS
+
+// Change if one pedal drive
+if (Controller.OnePedalDrive.OnePedalOn eq BoolState.On) {                                  // OPD enabled
+	drivenRegenCondition = (Autonomous.Mission eq Autonomous Mission.Manual Driving)
+	and (Sensors.APPS.throttlePosition < (Controller.OnePedalDrive.TorqueStartPos-Controller.OnePedalDrive.DeadzoneSize));    // APPS below deadzone (in regen zone)
+}
+
+// --- Driverless ---
+local autonomousRegenCondition = (Autonomous.Mission neq Autonomous Mission.Manual Driving)					                 // AS mission
+and (Autonomous.DataLogger.DvSystemStatus.asState eq Autonomous State.AS Driving and Autonomous.r2dPause.Remaining() <= 0.0)	 // AS driving
+and (Autonomous.IO.accelRequest < 0.0);
+
+//------------------------------------------------------------------------------
+// Pedal Logic
+//------------------------------------------------------------------------------ 
+
+// === Check if we are in a regen-scenario ===
+VCmode = LVSystems.Dash.VCmode9Pos;
+if (regenEnable eq BoolState.On							                                         // Regen enabled
+	and (Sensors.Chassis.kalmanSpeed > Controller.Regen.MinSpeed)		                     // Speed > 5 km/h
+	//and not ((Controller.DrivingMode eq Controller.drivingMode.RWD) or (mode eq 7))// No regen in RWD
+	and (drivenRegenCondition or autonomousRegenCondition or Sensors.Brakes.hardBrake eq 1)) // Regen condition or Hardbrake BSPD avoidance
+	{
+	
+	// === Set regen active flag ===
+	RegenOn = BoolState.On;
+	// autonomousRegenState = BoolState.On; Commented out to prevent 24 VC / 25 VC contamination
+
+	// === Determine Brake Position ===
+	if (Controller.OnePedalDrive.OnePedalOn eq BoolState.On) {
+	 // brakePos     = (maxPosScaled-Sensors.APPS.throttlePosition/reductionScaler)*posScaler/100; //Old Scaling
+	 brakePos	  = Calculate.Power(Calculate.Absolute((Sensors.APPS.throttlePosition-Controller.OnePedalDrive.TorqueStartPos+Controller.OnePedalDrive.DeadzoneSize) /
+					(Controller.OnePedalDrive.TorqueStartPos-Controller.OnePedalDrive.DeadzoneSize)), Controller.OnePedalDrive.RegenCurve); //Inverse Scaling
+	}
+	else {brakePos       = Sensors.Brakes.brakePosition;}
+	paraTrqLimit = Constraints.regenMotorTorqueLim;
+	
+} else {
+	// Set regen inactive flag
+	RegenOn = BoolState.Off;
+	
+	// === Throttle request and torque limit ===
+	// Check if one pedal drive
+	if (Controller.OnePedalDrive.OnePedalOn eq BoolState.On) {
+		// Coasting Zone
+		if (Sensors.APPS.throttlePosition < Controller.OnePedalDrive.TorqueStartPos) {ThrottlePos = 0.0;}
+		// Scale between min and max
+		else {
+			ThrottlePos  = Calculate.Power((Sensors.APPS.throttlePosition - Controller.OnePedalDrive.TorqueStartPos) / 
+						   (1.0 - Controller.OnePedalDrive.TorqueStartPos), Controller.OnePedalDrive.TorqueCurve);
+		}
+	}
+	else {
+	ThrottlePos = Sensors.APPS.throttlePosition;
+	}
+	
+	paraTrqLimit = Constraints.motorTorqueLim;
+	
+}
+
+// === Save throttlePos and brakePos to channels for logging ===
+Controller.OnePedalDrive.BrakePos25 = brakePos;
+Controller.OnePedalDrive.ThrottlePos25 = ThrottlePos;
+
+//------------------------------------------------------------------------------
+// Wheel Torque Limits
+//------------------------------------------------------------------------------
+
+// === Determine Per Wheel Limits ===
+
+// The individual corner torque limit can be determined as the minimum of the derating torque limit and the vehicle model grip limit
+// (paraTrqLimit = torque limit parameter set on M1 Tune)
+
+local FLtorqueLimit = Calculate.Min(Calculate.Min(Tractive System.Derating.FL.torqueLimit, Controller.TyreModel.FL.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+local FRtorqueLimit = Calculate.Min(Calculate.Min(Tractive System.Derating.FR.torqueLimit, Controller.TyreModel.FR.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+local RLtorqueLimit = Calculate.Min(Calculate.Min(Tractive System.Derating.RL.torqueLimit, Controller.TyreModel.RL.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+local RRtorqueLimit = Calculate.Min(Calculate.Min(Tractive System.Derating.RR.torqueLimit, Controller.TyreModel.RR.gripLimit), paraTrqLimit * Tractive System.Derating.RatedTorque);
+
+// Funky bit mask accumulation logic to determine what wheels are grip limited (for logging)
+// Use Abs() < tol for float comparison safety
+local tol = 0.01; // Nm tolerance
+
+Controller.TyreModel.gripLimited = 0
+    + ((Calculate.Absolute(FLtorqueLimit - Controller.TyreModel.FL.gripLimit) < tol) ? 1 : 0)   // FL -> bit 0
+    + ((Calculate.Absolute(FRtorqueLimit - Controller.TyreModel.FR.gripLimit) < tol) ? 2 : 0)   // FR -> bit 1
+    + ((Calculate.Absolute(RLtorqueLimit - Controller.TyreModel.RL.gripLimit) < tol) ? 4 : 0)   // RL -> bit 2
+    + ((Calculate.Absolute(RRtorqueLimit - Controller.TyreModel.RR.gripLimit) < tol) ? 8 : 0);  // RR -> bit 3
+
+
+//------------------------------------------------------------------------------
+// Adjust Limits Based on F/R Split
+//------------------------------------------------------------------------------
+// Check if we are regenerating to determine brake bias or torque split use.
+// Calculated by scaling down the front or rear axle to achieve the desired ratio. 
+
+local bias = 0.0;
+if (RegenOn eq BoolState.On) {
+	bias = Controller.Regen.BrakeBias; // %front
+	
+	//=== Brake Bias Migration ===
+	// Scale brake bias forwards based on steer to stop rears locking
+	bias = ((Constraints.brakeBiasMaxMigration-Controller.Regen.BrakeBias)/Constraints.brakeBiasSteerRange) *
+	Calculate.Absolute(Sensors.Chassis.Steering.angle)+Controller.Regen.BrakeBias;
+	
+	bias = Limit.Range(bias, 0.1, 1.0);
+	
+} else {
+	bias = 1 - Controller.TorqueSplit; // convert %rear -> %front
+}
+	
+if (bias < 0.5) {
+	// Rear-heavy -> scale front Axle
+	FLtorqueLimit *= bias / (1.0 - bias);
+	FRtorqueLimit *= bias / (1.0 - bias);
+	
+} else {
+	// Front-heavy -> scale rear axle
+	RLtorqueLimit *= (1.0 - bias) / bias;
+	RRtorqueLimit *= (1.0 - bias) / bias;
+}
+
+
+//------------------------------------------------------------------------------
+// Accel
+//------------------------------------------------------------------------------
+// During the accel event, we want the torque to be distributed approximately 
+// based on the wheel loads.
+if ((VCMode eq Controller.Accel.mode) // Accel mode
+	and (Sensors.Chassis.kalmanSpeed > 2)) {
+
+	// Calculate the relative load on each axle
+	local LT = 0.0;
+	if (Sensors.IMU.fault eq IMUDiagnostic.OK) {
+		LT = Sensors.IMU.longG / 9.81 * Constants.cogz / Constants.wheelBase;
+	}
+	local frontLoad = 1.0 - LT;
+	local rearLoad  = 1.0 + LT;
+	
+	// Front theoretical torque limit
+	local frontTorque = frontLoad / rearLoad;
+
+	// Set torque multipliers
+	FLtorqueLimit *= frontTorque;
+	FRtorqueLimit *= frontTorque;
+	RLtorqueLimit *= 1.0;
+	RRtorqueLimit *= 1.0;
+}
+
+//------------------------------------------------------------------------------
+// Driving Mode Redundancy
+//------------------------------------------------------------------------------
+// Remove any torque from the wheels that are not driven, and send all torque
+// to the wheels that are driven. 
+// VC modes 7 and 8 are fail-safes, for RWD and FWD respectively
+if ((Controller.DrivingMode eq Controller.drivingMode.RWD) or (VCMode eq 7)) {
+	FLtorqueLimit = 0.0;
+	FRtorqueLimit = 0.0;
+} else if (Controller.DrivingMode eq Controller.drivingMode.FWD or (VCMode eq 8)) {
+	RLtorqueLimit = 0.0;
+	RRtorqueLimit = 0.0;
+}
+
+//------------------------------------------------------------------------------
+// Torque Limits
+//------------------------------------------------------------------------------
+
+// Determine overall torque limit by finding the minimum value between the power-limited 
+// total torque and the sum of individual torque limits
+local sumTorqueLimit = FLtorqueLimit + FRtorqueLimit + RLtorqueLimit + RRtorqueLimit;
+Constraints.totalTorqueLimit = Calculate.Min(Tractive System.Derating.powerLimitedTotalTorque, sumTorqueLimit);
+
+// Save torque limits
+Constraints.FLtorqueLimit = FLtorqueLimit;
+Constraints.FRtorqueLimit = FRtorqueLimit;
+Constraints.RLtorqueLimit = RLtorqueLimit;
+Constraints.RRtorqueLimit = RRtorqueLimit;
+
+//------------------------------------------------------------------------------
+// Torque Target
+//------------------------------------------------------------------------------
+
+// There is two modes we use 
+
+// 1. TORQUE BASED MODE 
+// Driver request is linear to pedal pos 
+// Only capped if it exceeds limits
+	// TotalTorque = 29.1 Nm (per motor) * 4 motors = 116.4 Nm 
+	// Torque.target = Calculate.Min((116.4 * brakePos), Torque.totalLimit)
+
+// 2. POWER BASED MODE 
+// We scale the pedal position based on how much torque is available 
+	// Torque.target = Torque.totalLimit * pedalPosition
+
+// Choose active pedal (brake overrides throttle)
+local pedal = 0.0; 
+// Use a boolean flag to indicate pedal state
+local brakeActive = BoolState.Off;
+if ((ThrottlePos > 0.0) and (brakePos > 0.0)) {
+    pedal = brakePos;
+    brakeActive = BoolState.On;
+} else {
+    pedal = Calculate.Max(ThrottlePos, brakePos);
+    brakeActive = (brakePos > 0.0) ? BoolState.On : BoolState.Off;
+}
+
+// Select torque source depending on which pedal is active
+local torqueTarget = 0.0;
+if (brakeActive eq BoolState.On) {
+    torqueTarget = (Controller.TorqueBasedBrake eq BoolState.On)
+				? Calculate.Min(100.0 * pedal, Constraints.totalTorqueLimit)     // torque-based
+				: Constraints.totalTorqueLimit * pedal;                          // power-based
+} else {
+    torqueTarget = (Controller.TorqueBasedThrottle eq BoolState.On)
+				? Calculate.Min(100.0 * pedal, Constraints.totalTorqueLimit)     // torque-based
+				: Constraints.totalTorqueLimit * pedal;                          // power-based
+}
+
+// Autonomous override
+if (Autonomous.mission neq Autonomous Mission.Manual Driving) {
+	torqueTarget = Constraints.totalTorqueLimit;
+}
+
+// Log to constraint
+Constraints.torqueTarget = torqueTarget;
