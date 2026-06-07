@@ -27,7 +27,7 @@ typedef struct {
 #define MAX_CONES 150
 
 /* How close the car needs to get to a waypoint before we advance to the next one, metres. */
-#define WAYPOINT_CAPTURE_RADIUS_M  4.0f
+#define WAYPOINT_CAPTURE_RADIUS_M  2.0f
 
 
 /* The track data. Filled in by track_init(). */
