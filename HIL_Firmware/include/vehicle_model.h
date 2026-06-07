@@ -2,6 +2,7 @@
 #define VEHICLE_MODEL_H
 
 #include "../../shared/tv_interface.h"
+#include "vehicle_config.h"
 
 /*
  * vehicle_model.h  —  M25 dynamic bicycle model
@@ -57,36 +58,7 @@ typedef struct {
 } VehicleState;
 
 
-/* ---- M25 geometry ---- */
-#define WHEELBASE_M      1.55f   /* lf + lr, metres                        */
-#define CG_TO_FRONT_M    0.77f   /* CG → front axle (lf)                  */
-#define CG_TO_REAR_M     0.78f   /* CG → rear axle  (lr)                  */
-#define TRACK_WIDTH_M    1.30f   /* front and rear track width             */
-#define CG_HEIGHT_M      0.28f   /* CG height, metres                      */
-
-/* ---- M25 mass / inertia ---- */
-#define MASS_KG          260.0f
-#define YAW_INERTIA_KGM2 140.0f
-
-/* ---- Wheel / drivetrain ---- */
-#define WHEEL_RADIUS_M   0.254f
-#define MAX_SPEED_MS      30.0f
-
-/* ---- Pacejka lateral tyre model (M25 fitted coefficients) ---- */
-#define TYRE_B   12.33675f    /* stiffness factor                          */
-#define TYRE_C   -1.4203069f  /* shape factor  (negative → correct sign)  */
-#define TYRE_D    1.43284504f /* peak factor   (peak Fy / Fz)             */
-#define TYRE_E    0.422900f   /* curvature factor                         */
-
-/* Effective peak friction for the yaw-rate stability limiter */
-#define MU_TYRE  1.1f
-
-/* ---- Aerodynamics (M25) ---- */
-#define CLA          5.1f    /* downforce coefficient                      */
-#define CDA          1.8f    /* drag coefficient                           */
-#define AERO_AREA    1.0f    /* reference area, m²                        */
-#define AIR_DENSITY  1.29f   /* kg/m³                                     */
-
+/* All vehicle parameters are defined in vehicle_config.h — edit that file. */
 
 /* Set the vehicle to its starting position and zero all motion. */
 void vehicle_model_init(VehicleState *s, float start_x, float start_y, float start_heading);
