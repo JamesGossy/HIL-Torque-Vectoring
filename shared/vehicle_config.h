@@ -60,6 +60,14 @@
 /* Effective peak friction for the yaw-rate stability limiter */
 #define MU_TYRE  1.1f
 
+/* Peak friction coefficient for the per-wheel combined-slip FRICTION CIRCLE
+ * (vehicle_model.c step 6b): sqrt(Fx^2 + Fy^2) <= MU_GRIP * Fz.  Set near the
+ * Pacejka lateral peak factor (TYRE_D ~ 1.43) so a pure-cornering tyre is
+ * essentially unaffected and only the COMBINED longitudinal+lateral demand is
+ * clipped.  This is the model's primary grip limiter now; the r <= mu*g/v yaw
+ * clamp is only a numerical safety net behind it. */
+#define MU_GRIP  1.4f
+
 /* ---- Aerodynamics (M25) ---- */
 #define CLA          5.1f    /* lift coefficient (downforce positive)       */
 #define CDA          1.8f    /* drag coefficient                            */

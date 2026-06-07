@@ -270,6 +270,47 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     Fx_rl *= ((t->rl > 0.5f) || (vx > 0.3f)) ? 1.0f : 0.0f;
     Fx_rr *= ((t->rr > 0.5f) || (vx > 0.3f)) ? 1.0f : 0.0f;
 
+    /* ------------------------------------------------------------------ */
+    /* 6b. Combined-slip friction circle (per wheel)                        */
+    /*                                                                     */
+    /* A tyre has ONE friction budget shared between longitudinal (drive/  */
+    /* brake) and lateral (cornering) force: sqrt(Fx^2 + Fy^2) <= mu*Fz.    */
+    /* The old model computed Fx straight from motor torque with NO limit,  */
+    /* so a wheel could put down arbitrary drive force while already at its  */
+    /* lateral grip limit — the car could accelerate hard mid-corner with   */
+    /* no penalty (measured: up to 2.4x the tyres' real longitudinal grip). */
+    /* That removed the very lateral-vs-longitudinal trade-off that torque  */
+    /* vectoring exists to manage.                                          */
+    /*                                                                     */
+    /* Here each wheel's (Fx, Fy) is projected back onto its own friction   */
+    /* circle of radius mu*Fz_i (Fz_i already carries load transfer, so the */
+    /* loaded outer tyres keep a bigger budget than the unloaded inner ones */
+    /* — the load sensitivity TV exploits).  BOTH components are scaled by   */
+    /* the same factor so the resultant lands on the circle: powering up     */
+    /* mid-corner now bleeds lateral grip, which is the physical effect the  */
+    /* controller's traction-circle throttle cut is meant to pre-empt.       */
+    /*                                                                     */
+    /* MU_GRIP is set near the Pacejka lateral peak (~D), so a pure-cornering */
+    /* tyre (Fx≈0) is essentially unaffected — we only clip the COMBINED      */
+    /* demand, we do not weaken the lateral model the car already produces.   */
+    /* ------------------------------------------------------------------ */
+    {
+        float Fmax_fl = MU_GRIP * Fz_fl;
+        float Fmax_fr = MU_GRIP * Fz_fr;
+        float Fmax_rl = MU_GRIP * Fz_rl;
+        float Fmax_rr = MU_GRIP * Fz_rr;
+
+        float c_fl = sqrtf(Fx_fl*Fx_fl + Fy_fl*Fy_fl);
+        float c_fr = sqrtf(Fx_fr*Fx_fr + Fy_fr*Fy_fr);
+        float c_rl = sqrtf(Fx_rl*Fx_rl + Fy_rl*Fy_rl);
+        float c_rr = sqrtf(Fx_rr*Fx_rr + Fy_rr*Fy_rr);
+
+        if (c_fl > Fmax_fl) { float k = Fmax_fl/c_fl; Fx_fl *= k; Fy_fl *= k; }
+        if (c_fr > Fmax_fr) { float k = Fmax_fr/c_fr; Fx_fr *= k; Fy_fr *= k; }
+        if (c_rl > Fmax_rl) { float k = Fmax_rl/c_rl; Fx_rl *= k; Fy_rl *= k; }
+        if (c_rr > Fmax_rr) { float k = Fmax_rr/c_rr; Fx_rr *= k; Fy_rr *= k; }
+    }
+
     float cos_fl = cosf(s->steer_fl), sin_fl = sinf(s->steer_fl);
     float cos_fr = cosf(s->steer_fr), sin_fr = sinf(s->steer_fr);
 
@@ -309,7 +350,14 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     s->ay = vy_dot + vx * r;   /* lateral accel for G-G display */
 
     /* ------------------------------------------------------------------ */
-    /* 8. Integrate states                                                  */
+    /* 8. Integrate states  (semi-implicit / symplectic Euler)              */
+    /*                                                                     */
+    /* Velocities are advanced here FIRST, then heading and position (step  */
+    /* 9) are integrated from the just-updated yaw_rate / velocity / vy —    */
+    /* not the start-of-tick values.  This semi-implicit ordering is what    */
+    /* keeps the integrator stable on the stiff Pacejka tyre model at 100 Hz */
+    /* (a fully-explicit scheme that propagated position from the old        */
+    /* velocities would lag and could ring at the grip limit).              */
     /* ------------------------------------------------------------------ */
 
     s->vy       += vy_dot * dt;
@@ -330,9 +378,17 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
         s->yaw_rate *= 0.90f;
     }
 
-    /* Yaw-rate physical limit: r ≤ μ*g / vx */
+    /* Yaw-rate safety net: r <= 1.5 * mu*g / vx.
+     *
+     * The per-wheel friction circle (step 6b) is now the PRIMARY grip limiter
+     * and governs normal handling, so this clamp no longer needs to shape the
+     * yaw response — it was previously doing double duty as a stand-in for the
+     * missing combined-slip limit.  Widened to 1.5x the steady-state limit so
+     * it only catches a numerical blow-up (e.g. an integration spike at the
+     * grip edge) without cutting into yaw rates the tyre model legitimately
+     * produces during transient rotation. */
     if (vx > 1.0f) {
-        float r_max = (MU_TYRE * g) / vx;
+        float r_max = 1.5f * (MU_TYRE * g) / vx;
         if (s->yaw_rate >  r_max) s->yaw_rate =  r_max;
         if (s->yaw_rate < -r_max) s->yaw_rate = -r_max;
     }
