@@ -323,11 +323,14 @@ def draw_track(surface):
     left  = [world_to_screen(wx, wy) for (wx, wy) in _LEFT_WORLD]
     right = [world_to_screen(wx, wy) for (wx, wy) in _RIGHT_WORLD]
 
-    # Filled asphalt polygon: left cones forward + right cones reversed
+    # Filled asphalt polygon: left cones forward + right cones reversed.
+    # Close each boundary back to its own start so the start/finish seam
+    # is filled rather than cut across by the polygon closing edge.
     if len(left) >= 2 and len(right) >= 2:
-        poly = left + list(reversed(right))
+        poly = left + [left[0]] + [right[0]] + list(reversed(right))
         pygame.draw.polygon(surface, (45, 45, 45), poly)
-        pygame.draw.polygon(surface, (70, 70, 70), poly, 1)
+        pygame.draw.lines(surface, (70, 70, 70), True, left,  1)
+        pygame.draw.lines(surface, (70, 70, 70), True, right, 1)
 
     # Cone radius in pixels — fixed 4px min so they're always visible on map,
     # larger in follow-cam where the scale is higher
@@ -338,14 +341,10 @@ def draw_track(surface):
         pygame.draw.circle(surface, CONE_BLUE,      pt, r)
         pygame.draw.circle(surface, CONE_BLUE_EDGE, pt, r, 1)
 
-    # Yellow (right) cones — indices 3-4 are big-orange (start/finish gate)
-    for idx, pt in enumerate(right):
-        if idx in (3, 4):
-            pygame.draw.circle(surface, CONE_ORANGE, pt, r + 2)
-            pygame.draw.circle(surface, (255, 200, 50), pt, r + 2, 1)
-        else:
-            pygame.draw.circle(surface, CONE_YELLOW,      pt, r)
-            pygame.draw.circle(surface, CONE_YELLOW_EDGE, pt, r, 1)
+    # Yellow (right) cones
+    for pt in right:
+        pygame.draw.circle(surface, CONE_YELLOW,      pt, r)
+        pygame.draw.circle(surface, CONE_YELLOW_EDGE, pt, r, 1)
 
 
 def draw_trajectory_trace(surface, traj_deque):
