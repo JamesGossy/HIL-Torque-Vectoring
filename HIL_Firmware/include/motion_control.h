@@ -13,71 +13,100 @@
  *     negative = regenerative braking)
  *
  *
- * STEERING — Stanley controller
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * steer = heading_error + atan( K_CTE * cross_track_error / (v + K_SOFT) )
+ * STEERING — true Stanley controller (nearest-point)
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * The front axle is projected onto the NEAREST segment of the racing line.
+ * The control law is the classic Stanley method:
  *
- *   heading_error     difference between the car's heading and the direction
- *                     of the nearest reference segment.  Points the car along
- *                     the path.
- *   cross_track_error signed perpendicular distance from the front axle to
- *                     the reference segment.  The atan term adds extra steer
- *                     to pull the axle back onto the line.
- *   K_CTE             cross-track gain.  Higher = snappier return but more
- *                     oscillation.
- *   K_SOFT            softening constant.  Reduces gain at low speed to avoid
- *                     overcorrection at a crawl.
+ *   steer = heading_error + atan( K_CTE * cross_track_error / (v + K_SOFT) )
  *
- * The reference segment is found with a speed-adaptive lookahead:
- *   ld = clamp( v * LOOKAHEAD_TIME_S, LOOKAHEAD_MIN_M, LOOKAHEAD_MAX_M )
- * Shorter at low speed (tight corners), longer at high speed (straights).
+ *   heading_error      angle between the car heading and the tangent of the
+ *                      nearest path segment.  Aligns the car with the path.
+ *   cross_track_error  signed perpendicular distance from the front axle to
+ *                      the nearest path segment.  Pulls the axle back onto
+ *                      the line.
+ *
+ * Measuring both terms against the NEAREST segment (rather than a far
+ * look-ahead chord) is what makes the car track the racing line tightly
+ * instead of cutting across corner apexes.
+ *
+ * A gentle cone-repulsion term is added as a safety net: if the car comes
+ * within BOUNDARY_WARN_M of a boundary cone it is nudged away from that wall.
  *
  *
- * SPEED — path-distance corner-speed planner
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * Scans up to SPEED_PLAN_HORIZON_M metres ahead along the waypoints.
- * At each upcoming waypoint the Menger curvature κ is computed.
- * The maximum speed to arrive at the corner apex at the safe speed is:
- *   v_now_max = sqrt( v_corner^2 + 2 * MAX_BRAKE_DECEL_MS2 * path_dist )
- * The most restrictive value over all upcoming corners is the target speed.
- * A P-throttle + drag feedforward controller tracks the target when below it;
- * a P-brake controller tracks it when above.
+ * SPEED — two-pass backward-sweep corner planner
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * Pass 1 (forward): for each upcoming waypoint within SPEED_PLAN_HORIZON_M
+ *   v_limit[i] = min(TARGET_SPEED_MS, sqrt(MAX_LATERAL_ACCEL_MS2 / kappa)).
+ * Pass 2 (backward): propagate braking constraints from the furthest waypoint
+ *   back to the car:  v[i] = min(v_limit[i], sqrt(v[i+1]^2 + 2*a_brake*ds)).
+ * This models late-braking into corners and acceleration out of them.
  */
 
 
 /* ---- Stanley gains ---- */
-#define K_CTE          0.8f    /* cross-track error gain, rad/m            */
-#define K_SOFT         4.0f    /* softening speed, m/s                     */
-#define MAX_STEER_RAD  0.5f    /* physical steering limit (~28.6 deg)      */
+#define K_CTE          1.5f    /* cross-track error gain, rad/m            */
+#define K_SOFT         2.5f    /* softening speed, m/s                     */
+#define MAX_STEER_RAD  0.6f    /* steering limit (~34 deg; R_min ~2.3 m)   */
 
-/* Speed-adaptive lookahead for reference-segment selection */
-#define LOOKAHEAD_TIME_S   0.4f   /* seconds of travel ahead to look       */
-#define LOOKAHEAD_MIN_M    3.0f   /* minimum lookahead distance, metres    */
-#define LOOKAHEAD_MAX_M   10.0f   /* maximum lookahead distance, metres    */
+/*
+ * Nearest-segment search window around the controller's OWN progress index
+ * (s_path_idx), not track->current_index.  The controller projects the car
+ * onto the racing line every tick and advances its progress index with
+ * continuity, so a slide never makes it skip past a corner.
+ */
+#define NEAREST_SEARCH_BACK   3    /* segments to look back                */
+#define NEAREST_SEARCH_FWD   30    /* segments to look forward             */
 
 
 /* ---- Speed planner ---- */
 /*
- * MAX_LATERAL_ACCEL_MS2: M25 Pacejka peak ≈ 1.14 g at low speed, rising to
- * ~1.5 g at 14 m/s once downforce is included.  11 m/s² gives a ~20% margin
- * against the low-speed limit so the planner brakes early enough.
+ * MAX_BRAKE_DECEL_MS2 is intentionally set BELOW the physically achievable
+ * brake deceleration (~9 m/s^2 from -600 Nm regen) so the planner commits to
+ * braking early enough rather than overshooting the corner-entry speed.
  */
-#define TARGET_SPEED_MS        14.0f   /* cruise speed on straights, m/s   */
-#define MAX_LATERAL_ACCEL_MS2  11.0f   /* corner speed limit, m/s^2        */
-#define MAX_BRAKE_DECEL_MS2     9.0f   /* braking look-ahead decel, m/s^2  */
-#define SPEED_PLAN_HORIZON_M   60.0f   /* scan horizon for corners, metres */
+/*
+ * MAX_BRAKE_DECEL_MS2 must not exceed what the drivetrain can actually deliver.
+ * The ECU clamps each motor to -100 Nm of regen, so total braking torque is
+ * limited to -400 Nm -> ~6 m/s^2 decel.  We plan for 5 m/s^2 so the car commits
+ * to braking early enough rather than arriving at the corner too fast.
+ */
+/*
+ * MAX_LATERAL_ACCEL_MS2 is kept well below the car's true grip (~13 m/s^2)
+ * for two reasons: it leaves margin for the Stanley tracker to correct, and
+ * the discrete Menger curvature sampled on ~3 m waypoint spacing under-reads
+ * the true apex sharpness of tight hairpins, so a conservative value keeps the
+ * planned corner speed safe there.
+ */
+#define TARGET_SPEED_MS        12.0f   /* cruise speed on straights, m/s   */
+#define MAX_LATERAL_ACCEL_MS2   5.5f   /* corner speed limit, m/s^2        */
+#define MAX_BRAKE_DECEL_MS2     5.0f   /* braking look-ahead decel, m/s^2  */
+#define SPEED_PLAN_HORIZON_M   80.0f   /* scan horizon for corners, metres */
+#define SPEED_PLAN_STEPS        40     /* max waypoints to include in scan */
 
 
 /* ---- Throttle / brake controller ---- */
 /*
- * DRAG_FF_NM: M25 quadratic drag at 14 m/s ≈ 228 N → 58 Nm total →
- * 58/14 ≈ 4 Nm/(m/s).  Slightly conservative to avoid oscillation.
+ * BRAKE_KP_NM is deliberately high so the car actually follows the planned
+ * deceleration into a corner (a soft gain under-brakes and arrives too fast).
+ * LAT_GRIP_REF_MS2 is the peak lateral acceleration the car can sustain
+ * (with downforce, the M25 reaches ~13 m/s^2); throttle is scaled down by the
+ * remaining traction-circle budget so the car does not power-understeer out of
+ * a corner before it has opened up.
  */
 #define DRIVER_TORQUE_NM   800.0f   /* max throttle torque, Nm            */
 #define SPEED_KP_NM         60.0f   /* throttle P-gain, Nm/(m/s)          */
 #define DRAG_FF_NM           4.0f   /* drag feedforward, Nm/(m/s)         */
 #define DRIVER_BRAKE_NM   -600.0f   /* max regen braking torque, Nm       */
-#define BRAKE_KP_NM         80.0f   /* brake P-gain, Nm/(m/s)             */
+#define BRAKE_KP_NM        250.0f   /* brake P-gain, Nm/(m/s)             */
+#define LAT_GRIP_REF_MS2    13.0f   /* peak lateral accel for traction circle */
+
+
+/* ---- Cone boundary avoidance (safety net) ---- */
+#define BOUNDARY_WARN_M      1.0f   /* steer correction starts this far from a cone  */
+#define BOUNDARY_CORR_GAIN   0.30f  /* max boundary steering correction, rad         */
+#define BOUNDARY_SLOW_M      1.0f   /* speed reduction starts this far from a cone   */
+#define BOUNDARY_SLOW_FACTOR 0.6f   /* speed floor multiplier at the cone face       */
 
 
 /*
