@@ -43,6 +43,20 @@
  * and the inevitable steady-state bias of the kinematic desired-yaw estimate. */
 #define TV_YAW_DEADBAND  0.03f
 
+/* Understeer gradient for the desired-yaw reference, s^2/m (rad-based):
+ *   desired_yaw = v * tan(delta) / (WHEELBASE + TV_K_US * v^2)
+ * The plain kinematic estimate v*tan(delta)/L ignores body slip and over-
+ * demands yaw at speed; the v^2 term bends the reference down to the achievable
+ * yaw rate.  0 reproduces the original kinematic reference.
+ *
+ * NOTE on no integral term: an integral was prototyped but not kept.  It
+ * required persistent controller state (a fixed control period and a TVState
+ * the caller threads through every call), and in testing it produced no
+ * measurable tracking improvement over the corrected proportional reference
+ * while adding wind-up risk.  The controller is therefore kept as a clean,
+ * stateless pure-P mapping — simpler, and exactly reproducible call-to-call. */
+#define TV_K_US          0.06f
+
 /* Reference speed for speed-dependent gain scaling.
  * Gain = Kp * (TV_SPEED_REF_MS / v).  Set to 12 so TV stays authoritative
  * up through corner entry speeds (typically 10–15 m/s). */

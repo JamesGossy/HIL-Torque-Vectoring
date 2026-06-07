@@ -237,6 +237,29 @@ static void test_speed_gain_scaling(void)
 }
 
 
+/*
+ * Saturation-preserving clamp: with an extreme bias the outer wheel saturates
+ * at the motor peak, but the differential (outer - inner) must be PRESERVED by
+ * pushing the clipped amount onto the inner wheel (into regen) — not silently
+ * collapsed.  High base torque so the outer side clips.
+ */
+static void test_saturation_preserves_differential(void)
+{
+    SensorData s = straight(8.0f);
+    s.steering_angle = 0.5f;
+    s.yaw_rate       = -3.0f;        /* large positive (understeer) error */
+    WheelTorques t;
+    torque_vectoring_update(&s, 104.0f, 300.0f, &t);  /* base ~26 Nm/wheel, saturating bias */
+
+    /* Commanded differential = saturated bias (= max_bias). */
+    float want_diff = MAX_MOTOR_TORQUE_NM * 0.5f;
+    ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f);   /* outer clipped at peak */
+    ASSERT(t.rl >= MIN_MOTOR_TORQUE_NM - 0.001f);   /* inner in regen */
+    /* Differential preserved despite the clip (would collapse under a naive clamp). */
+    ASSERT_NEAR(t.rr - t.rl, want_diff, 0.5f);
+}
+
+
 /* ---- Entry point ---- */
 
 int main(void)
@@ -251,6 +274,7 @@ int main(void)
     test_clamp_lower();
     test_zero_gain();
     test_speed_gain_scaling();
+    test_saturation_preserves_differential();
 
     fprintf(stderr, "%d/%d tests passed\n", g_passed, g_tests);
     return (g_passed == g_tests) ? 0 : 1;

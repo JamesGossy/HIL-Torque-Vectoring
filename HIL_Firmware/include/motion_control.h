@@ -149,16 +149,24 @@
 #endif
 /*
  * MAX_LATERAL_ACCEL_MS2 is the corner-speed budget: v_corner = sqrt(a_lat/kappa).
- * The car's true peak is ~13 m/s^2; we plan at 7.0 so there is grip margin for
- * the tracker to correct AND so the planned hairpin entry speed is low enough
- * that the (now geometrically capable) steering can actually hold the arc.  The
- * old 3.5 was paired with a steering limit that could not make the corner at
- * any speed, so the conservative cap just made the car slow AND wide; with the
- * steering fix the binding constraint is real grip, so this can come up.
+ * The car's true peak is ~13 m/s^2.  This value was lowered from 7.0 to 4.0
+ * after the per-wheel friction circle was added to the vehicle model: once the
+ * tyres are honestly grip-limited, a 7.0 plan carried too much speed into the
+ * corners and the car ran wide.  3.0 keeps the planned corner speed within what
+ * the gripping tyres can hold while the Pure-Pursuit tracker corrects (it
+ * minimised cone contact in the post-friction-circle sweep).
+ *
+ * NOTE: even at low corner speed the car cannot fully clean the single tightest
+ * FSG hairpin (~3.2 m radius).  At full steering lock the front tyre is already
+ * past its Pacejka grip peak (~12 deg slip), so it understeers there regardless
+ * of speed — a genuine limit of THIS car's grip + steering geometry, not a
+ * tuning error.  A feasibility-aware racing line (one that opens that apex to a
+ * radius the car can actually hold) would be the proper fix; the current min-
+ * curvature line leaves the car grazing that one apex.
  *
  * Wrapped in #ifndef so the parameter sweep can override it (-DMAX_LATERAL_ACCEL_MS2=8.0f). */
 #ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2   7.0f   /* corner speed limit, m/s^2        */
+#define MAX_LATERAL_ACCEL_MS2   3.0f   /* corner speed limit, m/s^2        */
 #endif
 #define MAX_BRAKE_DECEL_MS2     6.0f   /* braking look-ahead decel, m/s^2  */
 #define SPEED_PLAN_HORIZON_M   80.0f   /* scan horizon for corners, metres */

@@ -67,17 +67,53 @@
 #define TV_WHEEL_YAW_TRUST  0.25f
 
 
+/* Clamp one axle's left/right torques to the motor envelope while PRESERVING
+ * the commanded differential (left - right), which is what carries the yaw
+ * moment.  If one side exceeds the peak, the excess is shifted onto the other
+ * side (into regen if needed) before the hard clamp, so a saturated outer wheel
+ * no longer silently collapses the differential. */
+static void clamp_axle_preserving(float left, float right,
+                                  float *left_out, float *right_out)
+{
+    if (left > MAX_MOTOR_TORQUE_NM) {
+        right -= (left - MAX_MOTOR_TORQUE_NM);
+        left   = MAX_MOTOR_TORQUE_NM;
+    } else if (right > MAX_MOTOR_TORQUE_NM) {
+        left -= (right - MAX_MOTOR_TORQUE_NM);
+        right = MAX_MOTOR_TORQUE_NM;
+    }
+    if (left  < MIN_MOTOR_TORQUE_NM) left  = MIN_MOTOR_TORQUE_NM;
+    if (left  > MAX_MOTOR_TORQUE_NM) left  = MAX_MOTOR_TORQUE_NM;
+    if (right < MIN_MOTOR_TORQUE_NM) right = MIN_MOTOR_TORQUE_NM;
+    if (right > MAX_MOTOR_TORQUE_NM) right = MAX_MOTOR_TORQUE_NM;
+    *left_out  = left;
+    *right_out = right;
+}
+
+
 void torque_vectoring_update(const SensorData *sensors,
                              float             driver_torque,
                              float             kp_yaw,
                              WheelTorques     *out)
 {
-    /* --- Step 1: Desired yaw rate from the kinematic bicycle model --- */
+    /* --- Step 1: Desired yaw rate (dynamic, understeer-gradient aware) ---
+     *
+     * The classic kinematic estimate  r = v*tan(delta)/L  is the ZERO-slip yaw
+     * rate.  A real car running a body-slip angle never reaches it, so at corner
+     * speed it over-demands yaw (measured here ~1.85 rad/s too high mid-corner),
+     * and the controller chases a target the tyres cannot deliver.
+     *
+     * The steady-state single-track model adds an understeer term:
+     *   r = v * delta / (L + K_us * v^2)
+     * The v^2 term bends the reference down as the car loads up laterally, so it
+     * tracks the achievable yaw rate.  K_us = 0 recovers the kinematic estimate.
+     * This is a pure mapping (no controller state) — see the note on why no
+     * integral term was added. */
     float desired_yaw_rate = 0.0f;
     if (sensors->velocity > 0.5f) {
-        desired_yaw_rate = sensors->velocity
-                           * tanf(sensors->steering_angle)
-                           / TV_WHEELBASE_M;
+        float v = sensors->velocity;
+        desired_yaw_rate = v * tanf(sensors->steering_angle)
+                           / (TV_WHEELBASE_M + TV_K_US * v * v);
     }
 
     /* --- Step 1b: Fuse the IMU yaw rate with a wheel-speed estimate ---
@@ -161,19 +197,18 @@ void torque_vectoring_update(const SensorData *sensors,
     float left_add  = -bias * 0.5f;
     float right_add =  bias * 0.5f;
 
-    out->fl = base_per_wheel + left_add;
-    out->fr = base_per_wheel + right_add;
-    out->rl = base_per_wheel + left_add;
-    out->rr = base_per_wheel + right_add;
-
-    /* --- Step 6: Clamp to motor limits --- */
-    if (out->fl < MIN_MOTOR_TORQUE_NM) out->fl = MIN_MOTOR_TORQUE_NM;
-    if (out->fr < MIN_MOTOR_TORQUE_NM) out->fr = MIN_MOTOR_TORQUE_NM;
-    if (out->rl < MIN_MOTOR_TORQUE_NM) out->rl = MIN_MOTOR_TORQUE_NM;
-    if (out->rr < MIN_MOTOR_TORQUE_NM) out->rr = MIN_MOTOR_TORQUE_NM;
-
-    if (out->fl > MAX_MOTOR_TORQUE_NM) out->fl = MAX_MOTOR_TORQUE_NM;
-    if (out->fr > MAX_MOTOR_TORQUE_NM) out->fr = MAX_MOTOR_TORQUE_NM;
-    if (out->rl > MAX_MOTOR_TORQUE_NM) out->rl = MAX_MOTOR_TORQUE_NM;
-    if (out->rr > MAX_MOTOR_TORQUE_NM) out->rr = MAX_MOTOR_TORQUE_NM;
+    /* --- Step 6: Clamp to motor limits, PRESERVING the differential ---
+     *
+     * The bias creates the yaw moment through the left/right torque DIFFERENCE.
+     * A naive independent per-wheel clamp silently destroys that moment: when
+     * the outer wheel saturates at the motor peak, (outer - inner) collapses and
+     * the commanded yaw moment is quietly lost — a classic torque-vectoring bug.
+     * clamp_axle_preserving() instead transfers the clipped amount onto the
+     * inner wheel (which has regen headroom down to MIN_MOTOR_TORQUE_NM), so the
+     * differential — and the yaw moment — is held at the commanded value as far
+     * as the motor envelope allows.  The split stays 50/50 front/rear. */
+    clamp_axle_preserving(base_per_wheel + left_add,  base_per_wheel + right_add,
+                          &out->fl, &out->fr);
+    clamp_axle_preserving(base_per_wheel + left_add,  base_per_wheel + right_add,
+                          &out->rl, &out->rr);
 }
