@@ -7,7 +7,10 @@ HIL_BUILD = HIL_Firmware/build
 ECU_BUILD = ECU_Firmware/build
 HIL_SIM   = $(HIL_BUILD)/hil_sim
 ECU_OBJ   = $(ECU_BUILD)/torque_vectoring.o
-TEST_BIN  = $(HIL_BUILD)/test_tv
+TEST_TV   = $(HIL_BUILD)/test_tv
+TEST_VM   = $(HIL_BUILD)/test_vehicle_model
+TEST_PP   = $(HIL_BUILD)/test_path_planning
+TEST_MC   = $(HIL_BUILD)/test_motion_control
 
 HIL_FLAGS = $(CFLAGS) \
             -I HIL_Firmware/include \
@@ -27,8 +30,19 @@ HIL_SRCS = HIL_Firmware/src/main.c \
 
 HIL_OBJS = $(patsubst %.c, $(HIL_BUILD)/%.o, $(notdir $(HIL_SRCS)))
 
-TEST_SRCS = tests/test_tv.c \
-            ECU_Firmware/src/torque_vectoring.c
+VM_SRCS = tests/test_vehicle_model.c \
+          HIL_Firmware/src/vehicle_model.c
+
+PP_SRCS = tests/test_path_planning.c \
+          HIL_Firmware/src/path_planning.c
+
+MC_SRCS = tests/test_motion_control.c \
+          HIL_Firmware/src/motion_control.c \
+          HIL_Firmware/src/vehicle_model.c \
+          HIL_Firmware/src/path_planning.c
+
+TV_SRCS = tests/test_tv.c \
+          ECU_Firmware/src/torque_vectoring.c
 
 .PHONY: all run test clean
 
@@ -53,8 +67,10 @@ $(ECU_OBJ): ECU_Firmware/src/torque_vectoring.c | $(ECU_BUILD)
 	$(CC) $(ECU_FLAGS) -c -o $@ $<
 
 test: $(HIL_BUILD)
-	$(CC) $(HIL_FLAGS) -o $(TEST_BIN) $(TEST_SRCS) -lm
-	$(TEST_BIN)
+	$(CC) $(HIL_FLAGS) -o $(TEST_TV) $(TV_SRCS) -lm && $(TEST_TV)
+	$(CC) $(HIL_FLAGS) -o $(TEST_VM) $(VM_SRCS) -lm && $(TEST_VM)
+	$(CC) $(HIL_FLAGS) -o $(TEST_PP) $(PP_SRCS) -lm && $(TEST_PP)
+	$(CC) $(HIL_FLAGS) -o $(TEST_MC) $(MC_SRCS) -lm && $(TEST_MC)
 
 run: all
 	$(HIL_SIM)
