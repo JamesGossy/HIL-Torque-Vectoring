@@ -21,3 +21,76 @@ jobs:
 
       - name: Run unit tests
         run: make test
+
+      - name: Lap evaluation
+        id: eval
+        run: |
+          # Run the headless lap evaluator and capture its full output.
+          make eval | tee eval_output.txt
+
+          # Pull out the machine-readable RESULT line and split it into fields
+          # (mean_cte=.. worst_cte=.. ... lap_s=..) as EVAL_<name> variables.
+          RESULT=$(grep '^RESULT' eval_output.txt)
+          for kv in ${RESULT#RESULT }; do
+            export "EVAL_${kv%%=*}=${kv#*=}"
+          done
+
+          # Render a summary table onto the GitHub Actions run page.
+          {
+            echo "## 🏎️ Lap evaluation"
+            echo ""
+            echo "Headless run of the motion-control → ECU → vehicle loop over the FSG 2024 track (50 s cap)."
+            echo ""
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Lap time | ${EVAL_lap_s} s |"
+            echo "| Laps completed (in 50 s) | ${EVAL_laps} |"
+            echo "| Mean cross-track error | ${EVAL_mean_cte} m |"
+            echo "| Worst cross-track error | ${EVAL_worst_cte} m |"
+            echo "| Worst CTE @ sharp corner | ${EVAL_worst_cte_sharp} m |"
+            echo "| Sharp-corner violations (>2 m) | ${EVAL_sharp_viol} |"
+            echo "| Off-track ticks (cone contact) | ${EVAL_offtrack} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Regression guard: fail the job if the car left the track or never
+          # completed a lap. These are hard correctness failures for the driver.
+          FAIL=0
+          if [ "${EVAL_laps}" = "0" ]; then
+            echo "::error::Car did not complete a lap within 50 s"
+            FAIL=1
+          fi
+          if [ "${EVAL_offtrack}" != "0" ]; then
+            echo "::error::Car went off-track (${EVAL_offtrack} ticks of cone contact)"
+            FAIL=1
+          fi
+          if [ "${EVAL_sharp_viol}" != "0" ]; then
+            echo "::warning::${EVAL_sharp_viol} sharp-corner ticks exceeded 2 m cross-track error"
+          fi
+          exit $FAIL
+
+      - name: Sim performance benchmark
+        # Informational only — this is raw compute throughput and depends on the
+        # GitHub runner hardware, so it is NOT a pass/fail gate (it never fails
+        # the job) and the numbers will differ from a local run.
+        run: |
+          # 3 s budget averages out CPU-frequency / scheduling jitter.
+          make perf >/dev/null 2>&1   # build (output discarded)
+          PERF_OUT=$(HIL_Firmware/build/perf_sim 3)
+          echo "$PERF_OUT"
+
+          PERF=$(echo "$PERF_OUT" | grep '^PERF')
+          for kv in ${PERF#PERF }; do
+            export "PERF_${kv%%=*}=${kv#*=}"
+          done
+
+          {
+            echo "## ⚡ Sim performance (GitHub runner hardware)"
+            echo ""
+            echo "Raw compute throughput of the tick loop with no real-time sleep, over a 3 s wall-clock budget. Hardware-dependent — informational, not a gate."
+            echo ""
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Ticks per second | ${PERF_ticks_per_s} |"
+            echo "| Real-time factor | ${PERF_rt_factor}× |"
+            echo "| Laps per wall-second | ${PERF_laps_per_s} |"
+          } >> "$GITHUB_STEP_SUMMARY"

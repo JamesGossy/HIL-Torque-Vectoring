@@ -13,22 +13,28 @@
  *     negative = regenerative braking)
  *
  *
- * STEERING — true Stanley controller (nearest-point)
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * The front axle is projected onto the NEAREST segment of the racing line.
- * The control law is the classic Stanley method:
+ * STEERING — Pure Pursuit (geometric look-ahead)
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * The previous Stanley law failed on the tight FSG hairpins: it is purely
+ * reactive (heading error + cross-track feedback), so it turned in late, its
+ * feedback then saturated at the steering limit, and the car ran several metres
+ * wide while pinned at full lock.
  *
- *   steer = heading_error + atan( K_CTE * cross_track_error / (v + K_SOFT) )
+ * Pure Pursuit is a GEOMETRIC tracker.  It picks a target point on the racing
+ * line a look-ahead distance Ld in front of the rear axle and computes the
+ * single-arc steer angle that drives the rear axle through it:
  *
- *   heading_error      angle between the car heading and the tangent of the
- *                      nearest path segment.  Aligns the car with the path.
- *   cross_track_error  signed perpendicular distance from the front axle to
- *                      the nearest path segment.  Pulls the axle back onto
- *                      the line.
+ *   delta = atan2( 2 * WHEELBASE * sin(alpha), Ld )
  *
- * Measuring both terms against the NEAREST segment (rather than a far
- * look-ahead chord) is what makes the car track the racing line tightly
- * instead of cutting across corner apexes.
+ *   alpha   angle from the car heading to the look-ahead point (rad)
+ *   Ld      look-ahead distance, adapted to speed:
+ *             Ld = clamp(K_LOOKAHEAD * v, LOOKAHEAD_MIN_M, LOOKAHEAD_MAX_M)
+ *
+ * A short Ld at low speed lets the car commit to the apex of a tight corner
+ * instead of chording across it; a longer Ld at speed keeps the line smooth and
+ * stable on the straights.  Because the steer command is computed directly from
+ * the geometry of the corner ahead, it does not lag-then-saturate the way the
+ * reactive Stanley feedback did.
  *
  * A gentle cone-repulsion term is added as a safety net: if the car comes
  * within BOUNDARY_WARN_M of a boundary cone it is nudged away from that wall.
@@ -41,31 +47,81 @@
  * Pass 2 (backward): propagate braking constraints from the furthest waypoint
  *   back to the car:  v[i] = min(v_limit[i], sqrt(v[i+1]^2 + 2*a_brake*ds)).
  * This models late-braking into corners and acceleration out of them.
+ *
+ * A steering-saturation throttle cut (see STEER_SAT_FRAC) closes the loop the
+ * old controller was missing: when the wheel is near full lock the front tyres
+ * are already spending their whole grip budget on turning, so any throttle just
+ * powers the car wide.  Throttle is faded out as the steer command approaches
+ * the limit, which is what stops the mid-hairpin "accelerate while pinned at
+ * full lock and slide wide" failure.
  */
 
 
-/* ---- Stanley gains ---- */
-#define K_CTE          3.0f    /* cross-track error gain, rad/m            */
-#define K_SOFT         2.5f    /* softening speed, m/s                     */
-
+/* ---- Pure Pursuit gains ---- */
 /*
- * Curvature feedforward gain (dimensionless, ~1.0 = full kinematic value).
- * Pure Stanley is reactive and always lags into a corner, so it turns in late
- * and runs wide on tight apexes.  Feeding forward the path curvature
- * (delta_ff = K_CURV_FF * atan(WHEELBASE * kappa)) pre-aligns the wheel with the
- * corner so the reactive terms only trim the residual. */
-#define K_CURV_FF      1.15f
-#define MAX_STEER_RAD  0.6f    /* steering limit (~34 deg; R_min ~2.3 m)   */
-
-/*
- * Steering slew-rate limit (road-wheel angle), rad/s.  The Stanley law can jump
- * the commanded angle discontinuously tick-to-tick; a real driver / steering
- * actuator cannot.  4 rad/s at the road wheel sweeps the full +/-0.6 rad lock in
- * ~0.3 s -- still a quick driver, but no longer visibly snapping.  The motion
- * controller runs once per sim tick, so the per-tick step is limited to
- * MAX_STEER_RATE_RADS * MC_DT_S.
+ * Look-ahead distance adapts to speed:  Ld = clamp(K_LOOKAHEAD*v, MIN, MAX).
+ *
+ * K_LOOKAHEAD sets how far ahead (in seconds of travel) the tracker aims.  At
+ * the ~2.5 m waypoint spacing of this track, a short floor (LOOKAHEAD_MIN_M) is
+ * what lets the car bite into the tight hairpins: the target point sits just
+ * past the apex, so the geometric arc bends hard into the corner instead of
+ * chording across it.  The cap (LOOKAHEAD_MAX_M) keeps the line smooth at speed.
+ *
+ * A small cross-track trim (K_CTE_PP) is layered on Pure Pursuit so that, if the
+ * car has been pushed off the line, it is actively pulled back rather than just
+ * running parallel to it — Pure Pursuit alone has no restoring term once the
+ * look-ahead point and the car drift onto the same offset line.
  */
-#define MAX_STEER_RATE_RADS  4.0f
+/* These four gains are wrapped in #ifndef so a parameter sweep can override
+ * them from the compiler command line (-DK_LOOKAHEAD=0.5f etc.) without editing
+ * this file.  The values below are the tuned defaults. */
+#ifndef K_LOOKAHEAD
+#define K_LOOKAHEAD       0.45f   /* look-ahead time, s (Ld = this * v)       */
+#endif
+#ifndef LOOKAHEAD_MIN_M
+#define LOOKAHEAD_MIN_M   2.8f    /* minimum look-ahead, m (tight corners)
+                                   * — 2.8 won the sweep: fastest fully clean
+                                   *   lap (32.0 s, 0 cone contacts).  Smaller
+                                   *   floors shaved nothing off lap time but
+                                   *   clipped 5–7 apex cones. */
+#endif
+#ifndef LOOKAHEAD_MAX_M
+#define LOOKAHEAD_MAX_M   9.0f    /* maximum look-ahead, m (straights)        */
+#endif
+#ifndef K_CTE_PP
+#define K_CTE_PP          0.35f   /* cross-track restoring trim, rad/m        */
+#endif
+
+/*
+ * Steering limit (reference angle, rad).  The vehicle model multiplies this by
+ * the Ackermann ratios (~0.20–0.26) to get the road-wheel angles, so the
+ * reference angle is much larger than the actual wheel angle.  The OLD value of
+ * 0.6 rad gave only ~0.13 rad at the wheel -> a kinematic minimum radius of
+ * ~11 m.  The tightest FSG hairpin on this track is ~3.2 m radius, so at the old
+ * limit the car PHYSICALLY could not follow the line and ran wide no matter how
+ * good the tracker was.  1.7 rad reference -> ~0.39 rad at the loaded outer
+ * wheel -> R_min ~3.8 m, enough to negotiate the hairpins with the speed plan
+ * holding entry speed down. */
+#define MAX_STEER_RAD  1.7f    /* steering reference limit (R_min ~3.8 m)  */
+
+/* Throttle is faded out as the steer command rises above STEER_SAT_FRAC of the
+ * limit: near full lock the front tyres are saturated turning, so throttle only
+ * powers the car wide.  At/below the fraction throttle is unaffected; at the
+ * limit it is fully cut. */
+#define STEER_SAT_FRAC  0.7f
+
+/*
+ * Steering slew-rate limit (reference angle), rad/s.  The tracker can jump the
+ * commanded angle discontinuously tick-to-tick (e.g. when the nearest-segment
+ * projection steps to a new waypoint); a real driver / steering actuator
+ * cannot.  The motion controller runs once per sim tick, so the per-tick step
+ * is limited to MAX_STEER_RATE_RADS * MC_DT_S.  Raised from 4.0 to 8.0 rad/s
+ * alongside the larger MAX_STEER_RAD so the wheel can still reach the (now
+ * larger) lock fast enough to catch a tight hairpin turn-in.
+ */
+#ifndef MAX_STEER_RATE_RADS
+#define MAX_STEER_RATE_RADS  8.0f
+#endif
 #define MC_DT_S              0.01f   /* sim tick period, s (100 Hz) -- matches DT */
 
 /*
@@ -87,21 +143,24 @@
  * the car commits to braking early enough rather than arriving at the corner
  * too fast (a planner that uses the peak decel tends to over-shoot).
  *
- * MAX_LATERAL_ACCEL_MS2 is kept well below the car's true grip (~13 m/s^2)
- * so there is margin for the Stanley tracker to correct, and because the
- * discrete Menger curvature sampled on ~3 m waypoint spacing under-reads tight
- * hairpin apexes — a conservative value keeps the planned corner speed safe.
  */
-/*
- * MAX_LATERAL_ACCEL_MS2 is kept well below the car's true grip (~13 m/s^2)
- * for two reasons: it leaves margin for the Stanley tracker to correct, and
- * the discrete Menger curvature sampled on ~3 m waypoint spacing under-reads
- * the true apex sharpness of tight hairpins, so a conservative value keeps the
- * planned corner speed safe there.
- */
+#ifndef TARGET_SPEED_MS
 #define TARGET_SPEED_MS        20.0f   /* cruise speed on straights, m/s   */
-#define MAX_LATERAL_ACCEL_MS2   3.5f   /* corner speed limit, m/s^2        */
-#define MAX_BRAKE_DECEL_MS2     5.0f   /* braking look-ahead decel, m/s^2  */
+#endif
+/*
+ * MAX_LATERAL_ACCEL_MS2 is the corner-speed budget: v_corner = sqrt(a_lat/kappa).
+ * The car's true peak is ~13 m/s^2; we plan at 7.0 so there is grip margin for
+ * the tracker to correct AND so the planned hairpin entry speed is low enough
+ * that the (now geometrically capable) steering can actually hold the arc.  The
+ * old 3.5 was paired with a steering limit that could not make the corner at
+ * any speed, so the conservative cap just made the car slow AND wide; with the
+ * steering fix the binding constraint is real grip, so this can come up.
+ *
+ * Wrapped in #ifndef so the parameter sweep can override it (-DMAX_LATERAL_ACCEL_MS2=8.0f). */
+#ifndef MAX_LATERAL_ACCEL_MS2
+#define MAX_LATERAL_ACCEL_MS2   7.0f   /* corner speed limit, m/s^2        */
+#endif
+#define MAX_BRAKE_DECEL_MS2     6.0f   /* braking look-ahead decel, m/s^2  */
 #define SPEED_PLAN_HORIZON_M   80.0f   /* scan horizon for corners, metres */
 #define SPEED_PLAN_STEPS        40     /* max waypoints to include in scan */
 
