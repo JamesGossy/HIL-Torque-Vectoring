@@ -2,7 +2,7 @@
 #define VEHICLE_MODEL_H
 
 #include "../../shared/tv_interface.h"
-#include "vehicle_config.h"
+#include "../../shared/vehicle_config.h"
 
 /*
  * vehicle_model.h  —  M25 dynamic vehicle model (4-corner)
@@ -84,7 +84,7 @@ typedef struct {
 } VehicleState;
 
 
-/* All vehicle parameters are defined in vehicle_config.h — edit that file. */
+/* All vehicle parameters are defined in shared/vehicle_config.h — edit that file. */
 
 /* Set the vehicle to its starting position and zero all motion. */
 void vehicle_model_init(VehicleState *s, float start_x, float start_y, float start_heading);
