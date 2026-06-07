@@ -31,10 +31,17 @@
  * Units: Nm of torque bias per rad/s of yaw rate error.
  * Start here and adjust with [ / ] at runtime.
  * The higher the gain, the harder TV fights to hit the desired yaw rate.
- * With the soft-front understeer setup (CA_FRONT < CA_REAR), a gain of 200
- * is needed to produce a clearly visible lap-time difference.
- * You can adjust at runtime with [ / ] to explore the effect. */
-#define KP_YAW_DEFAULT  200.0f
+ * Units are Nm (motor) of bias per rad/s of yaw error; the bias is clamped to
+ * half the motor peak (~14.7 Nm), so a gain that drives typical errors of a
+ * few tenths of a rad/s past that clamp just saturates and bangs between the
+ * rails.  60 keeps the differential proportional through normal cornering;
+ * raise it with ] until the bias starts to saturate, then back off. */
+#define KP_YAW_DEFAULT  60.0f
+
+/* Yaw-rate error deadband, rad/s.  Errors smaller than this are treated as
+ * zero so the torque differential does not chatter about zero on sensor noise
+ * and the inevitable steady-state bias of the kinematic desired-yaw estimate. */
+#define TV_YAW_DEADBAND  0.03f
 
 /* Reference speed for speed-dependent gain scaling.
  * Gain = Kp * (TV_SPEED_REF_MS / v).  Set to 12 so TV stays authoritative
@@ -42,14 +49,10 @@
 #define TV_SPEED_REF_MS  12.0f
 
 /* Hard limit on torque per motor, Nm. Represents motor peak torque. */
-#define MAX_MOTOR_TORQUE_NM  200.0f
+#define MAX_MOTOR_TORQUE_NM   29.4f
 
 /* Minimum motor torque (negative = regenerative braking). */
 #define MIN_MOTOR_TORQUE_NM  -100.0f
-
-/* Front/rear torque split. 0.5 = 50% front, 50% rear. */
-#define FRONT_REAR_SPLIT  0.5f
-
 
 /*
  * Compute wheel torques from sensor data.

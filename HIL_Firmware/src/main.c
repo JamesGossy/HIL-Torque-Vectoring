@@ -43,7 +43,7 @@
  *     END_TRACK
  *
  *   State lines (one per display tick):
- *     STATE <x> <y> <heading> <speed_kmh> <yaw_deg_s> <fl> <fr> <rl> <rr> <tv> <kp> <lap> <elapsed_s> <steering_rad> <slip_angle_rad> <desired_yaw_rad_s> <ax_ms2> <ay_ms2> <vy_ms>
+ *     STATE <x> <y> <heading> <speed_kmh> <yaw_deg_s> <fl> <fr> <rl> <rr> <tv> <kp> <lap> <elapsed_s> <steering_rad> <slip_angle_rad> <desired_yaw_rad_s> <ax_ms2> <ay_ms2> <vy_ms> <target_speed_kmh>
  *
  *   Commands come in on stdin (one character at a time):
  *     t  -- toggle torque vectoring
@@ -127,8 +127,9 @@ static void sleep_ms(int ms)
 static double get_time_s(void)
 {
 #ifdef _WIN32
-    LARGE_INTEGER freq, count;
-    QueryPerformanceFrequency(&freq);
+    static LARGE_INTEGER freq = {0};
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER count;
     QueryPerformanceCounter(&count);
     return (double)count.QuadPart / (double)freq.QuadPart;
 #else
@@ -149,6 +150,11 @@ int main(void)
     SensorData   sensors = {0};
 
     track_init(&track);
+
+    if (track.count < 2) {
+        fprintf(stderr, "track_init produced fewer than 2 waypoints — cannot run\n");
+        return 1;
+    }
 
     /* Derive initial heading from the direction of the first track segment */
     float init_dx = track.points[1].x - track.points[0].x;
@@ -198,7 +204,8 @@ int main(void)
         tick++;
 
         /* 1. Motion control */
-        float driver_torque = motion_control_update(&state, &track);
+        float target_speed = 0.0f;
+        float driver_torque = motion_control_update(&state, &track, &target_speed);
 
         /* 2. Pack sensor data */
         sensors.yaw_rate       = state.yaw_rate;
@@ -206,16 +213,23 @@ int main(void)
         sensors.steering_angle = state.steering;
         sensors.driver_torque  = driver_torque;
 
-        float wheel_speed_rads = state.velocity / WHEEL_RADIUS_M;
-        sensors.wheel_speed[WHEEL_FL] = wheel_speed_rads;
-        sensors.wheel_speed[WHEEL_FR] = wheel_speed_rads;
-        sensors.wheel_speed[WHEEL_RL] = wheel_speed_rads;
-        sensors.wheel_speed[WHEEL_RR] = wheel_speed_rads;
+        /* Real per-corner wheel speeds from the vehicle model.  The model
+         * stores motor-shaft RPM; convert to wheel angular speed (rad/s) for
+         * the sensor bus: wheel_rad/s = motor_RPM / GEAR_RATIO * 2π/60. */
+        const float RPM_TO_WHEEL_RADS = (2.0f * 3.14159265358979f)
+                                        / (GEAR_RATIO * 60.0f);
+        sensors.wheel_speed[WHEEL_FL] = state.wheelspeed[WHEEL_FL] * RPM_TO_WHEEL_RADS;
+        sensors.wheel_speed[WHEEL_FR] = state.wheelspeed[WHEEL_FR] * RPM_TO_WHEEL_RADS;
+        sensors.wheel_speed[WHEEL_RL] = state.wheelspeed[WHEEL_RL] * RPM_TO_WHEEL_RADS;
+        sensors.wheel_speed[WHEEL_RR] = state.wheelspeed[WHEEL_RR] * RPM_TO_WHEEL_RADS;
 
         /* 3. ECU */
         if (tv_enabled) {
             torque_vectoring_update(&sensors, driver_torque, kp_yaw, &torques);
         } else {
+            /* TV off: split the driver's MOTOR-torque demand evenly across the
+             * four motors.  The vehicle model applies GEAR_RATIO itself, so we
+             * must not multiply by it here (that double-counts the ratio). */
             float base = driver_torque * 0.25f;
             torques.fl = torques.fr = torques.rl = torques.rr = base;
         }
@@ -232,7 +246,7 @@ int main(void)
             float desired_yaw_rate = 0.0f;
             if (state.velocity > 0.5f)
                 desired_yaw_rate = state.velocity * tanf(state.steering) / WHEELBASE_M;
-            printf("STATE %.3f %.3f %.4f %.2f %.2f %.1f %.1f %.1f %.1f %d %.1f %d %.1f %.4f %.4f %.4f %.3f %.3f %.3f\n",
+            printf("STATE %.3f %.3f %.4f %.2f %.2f %.1f %.1f %.1f %.1f %d %.1f %d %.1f %.4f %.4f %.4f %.3f %.3f %.3f %.2f\n",
                    state.x,
                    state.y,
                    state.heading,
@@ -248,7 +262,8 @@ int main(void)
                    desired_yaw_rate,            /* rad/s */
                    state.ax,                    /* m/s^2 (for G-G display) */
                    state.ay,                    /* m/s^2 (for G-G display) */
-                   state.vy);                   /* m/s  (lateral velocity) */
+                   state.vy,                    /* m/s  (lateral velocity) */
+                   target_speed * 3.6f);        /* planner target speed, km/h */
             fflush(stdout);
         }
 

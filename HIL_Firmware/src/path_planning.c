@@ -180,18 +180,16 @@ static void resample_centreline(void)
     if (m > MAX_WAYPOINTS)   m = MAX_WAYPOINTS;
     float step = total / (float)m;
 
-    int   seg     = 0;        /* current centreline segment index            */
-    float seg_acc = 0.0f;     /* arc length consumed within the current seg   */
-    float seg_len;
-    {
-        int j = 1 % g;
-        seg_len = sqrtf((cl_x[j]-cl_x[0])*(cl_x[j]-cl_x[0]) +
-                        (cl_y[j]-cl_y[0])*(cl_y[j]-cl_y[0]));
-    }
+    /* NOTE: this loop is O(m*g) — it re-walks from segment 0 for every output
+     * point.  Fine at FSG-2024 sizes (~100 gates, ~130 output points); a single
+     * forward sweep would reduce it to O(m+g) if the track ever grows large. */
+    int   seg     = 0;
+    float seg_acc = 0.0f;
+    float seg_len = 0.0f;
+    (void)seg; (void)seg_acc; (void)seg_len; /* initialised inside the loop */
 
     for (i = 0; i < m; i++) {
         float target = i * step;
-        /* Walk segments until target arc length falls inside the current one */
         float walked = 0.0f;
         seg = 0; seg_acc = 0.0f;
         while (seg < g) {

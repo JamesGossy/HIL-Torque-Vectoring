@@ -13,12 +13,15 @@ SRCS = src/main.c \
        src/track.c \
        src/path_planning.c \
        src/motion_control.c \
-       src/visualiser.c \
        ../ECU_Firmware/src/torque_vectoring.c
 
 OBJS = $(patsubst %.c, $(BUILD)/%.o, $(notdir $(SRCS)))
 
-.PHONY: all run clean
+TEST_SRCS = ../tests/test_tv.c \
+            ../ECU_Firmware/src/torque_vectoring.c
+TEST_BIN  = $(BUILD)/test_tv
+
+.PHONY: all run test clean
 
 all: $(BUILD) $(TARGET)
 
@@ -33,6 +36,10 @@ $(BUILD)/torque_vectoring.o: ../ECU_Firmware/src/torque_vectoring.c | $(BUILD)
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+test: $(BUILD)
+	$(CC) $(CFLAGS) -o $(TEST_BIN) $(TEST_SRCS) -lm
+	$(TEST_BIN)
 
 run: all
 	./$(TARGET)
