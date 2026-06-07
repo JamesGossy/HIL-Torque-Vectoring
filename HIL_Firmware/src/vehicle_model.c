@@ -169,7 +169,7 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     float Fz_rear_axle  = MASS_KG * g * (CG_TO_FRONT_M / WHEELBASE_M) + F_downforce * 0.5f;
 
     /* Load transfer is driven by the roll/pitch-lagged accelerations (see
-     * vehicle_config.h).  Using the lagged values — not the same-tick ax/ay
+     * shared/vehicle_config.h).  Using the lagged values — not the same-tick ax/ay
      * that the transfer itself helps create — is what keeps the model from
      * ringing tick-to-tick. */
     float dFz_long = s->ax_filt * MASS_KG * CG_HEIGHT_M / WHEELBASE_M;

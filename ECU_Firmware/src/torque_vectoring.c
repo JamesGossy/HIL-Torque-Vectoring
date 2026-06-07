@@ -1,5 +1,5 @@
 #include "../include/torque_vectoring.h"
-#include "../../shared/vehicle_constants.h"
+#include "../../shared/vehicle_config.h"
 #include <math.h>
 
 /*
@@ -49,18 +49,16 @@
  *   yaw moment maps, tyre models) but this captures the essential idea.
  */
 
-/* Vehicle geometry — sourced from shared/vehicle_constants.h so these values
- * stay in sync with vehicle_config.h on the HIL side.  The ECU does not
- * include HIL headers, but it can include shared/ headers. */
-#define TV_WHEELBASE_M    SHARED_WHEELBASE_M
-#define TV_TRACK_WIDTH_M  SHARED_TRACK_WIDTH_M
-#define TV_WHEEL_RADIUS_M SHARED_WHEEL_RADIUS_M
+/* Vehicle geometry — sourced from shared/vehicle_config.h. */
+#define TV_WHEELBASE_M    WHEELBASE_M
+#define TV_TRACK_WIDTH_M  TRACK_WIDTH_M
+#define TV_WHEEL_RADIUS_M WHEEL_RADIUS_M
 
 /* Motor-to-wheel gear ratio, kept for reference only.  The ECU works entirely
  * in MOTOR torque (both driver_torque in and the WheelTorques out); the vehicle
  * model is what applies the gear ratio to get wheel force.  Do NOT multiply the
  * ECU outputs by this -- that double-counts the ratio and saturates the motors. */
-#define TV_GEAR_RATIO   SHARED_GEAR_RATIO
+#define TV_GEAR_RATIO   GEAR_RATIO
 
 /* Weight on the wheel-speed-derived yaw estimate when fused with the IMU.
  * 0 = trust IMU only, 1 = trust wheel speeds only.  The wheel-speed estimate

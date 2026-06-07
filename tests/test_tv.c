@@ -217,21 +217,14 @@ static void test_zero_gain(void)
  */
 static void test_speed_gain_scaling(void)
 {
-    /* Same steering, zero actual yaw rate at two speeds */
+    /* No steering so desired_yaw_rate=0; error comes purely from yaw_rate offset.
+     * Equal wheel speeds mean r_wheels=0, so yaw_rate_est = 0.75 * yaw_rate.
+     * Setting yaw_rate = -0.5 gives yaw_error = 0 - 0.75*(-0.5) = +0.375 at
+     * both speeds, isolating the speed-dependent gain effect. */
     SensorData sLow  = straight(6.0f);
     SensorData sHigh = straight(24.0f);
-    sLow.steering_angle  = 0.2f;
-    sHigh.steering_angle = 0.2f;
-    /* desired yaw at low speed is bigger, but effective_kp is also bigger;
-     * isolate the gain effect by keeping the error the same via yaw_rate */
-    float desired_low  = 6.0f  * tanf(0.2f) / 1.55f;
-    float desired_high = 24.0f * tanf(0.2f) / 1.55f;
-    sLow.yaw_rate  = desired_low  - 0.5f;   /* error = 0.5 rad/s at low speed  */
-    sHigh.yaw_rate = desired_high - 0.5f;   /* error = 0.5 rad/s at high speed */
-    for (int i = 0; i < 4; i++) {
-        sLow.wheel_speed[i]  = 6.0f  / 0.254f;
-        sHigh.wheel_speed[i] = 24.0f / 0.254f;
-    }
+    sLow.yaw_rate  = -0.5f;
+    sHigh.yaw_rate = -0.5f;
 
     WheelTorques tLow, tHigh;
     torque_vectoring_update(&sLow,  40.0f, KP_YAW_DEFAULT, &tLow);

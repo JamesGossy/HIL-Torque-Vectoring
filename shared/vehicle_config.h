@@ -1,26 +1,23 @@
 #ifndef VEHICLE_CONFIG_H
 #define VEHICLE_CONFIG_H
 
-#include "../../shared/vehicle_constants.h"
-
 /* =========================================================================
- * vehicle_config.h  —  M25 vehicle parameters
+ * shared/vehicle_config.h  —  M25 vehicle parameters
  *
- * Edit this file to tune the model. All defines here are consumed by
- * vehicle_model.h / vehicle_model.c — do not change those files directly.
- *
- * Geometry values shared with the ECU (wheelbase, track width, wheel radius,
- * gear ratio) come from shared/vehicle_constants.h so both sides stay in sync.
+ * Single source of truth for all vehicle constants used by both the HIL
+ * simulation and the ECU firmware.  Edit this file to tune the model.
  * ========================================================================= */
 
-/* ---- M25 geometry (aliases into the shared constants) ---- */
-#define WHEELBASE_M      SHARED_WHEELBASE_M
-#define CG_TO_FRONT_M    0.77f   /* CG → front axle (lf)                  */
-#define CG_TO_REAR_M     0.78f   /* CG → rear axle  (lr)                  */
-#define TRACK_WIDTH_FRONT_M  SHARED_TRACK_WIDTH_M   /* front track width   */
-#define TRACK_WIDTH_REAR_M   SHARED_TRACK_WIDTH_M   /* rear track width    */
-#define TRACK_WIDTH_M    SHARED_TRACK_WIDTH_M       /* alias               */
-#define CG_HEIGHT_M      0.28f   /* CG height, metres                      */
+/* ---- M25 geometry ---- */
+#define WHEELBASE_M          1.55f   /* lf + lr, metres                    */
+#define TRACK_WIDTH_M        1.30f   /* front = rear track width           */
+#define TRACK_WIDTH_FRONT_M  TRACK_WIDTH_M
+#define TRACK_WIDTH_REAR_M   TRACK_WIDTH_M
+#define WHEEL_RADIUS_M       0.254f  /* nominal tyre rolling radius        */
+#define GEAR_RATIO           15.47f  /* motor-to-wheel gear ratio          */
+#define CG_TO_FRONT_M        0.77f   /* CG → front axle (lf)              */
+#define CG_TO_REAR_M         0.78f   /* CG → rear axle  (lr)              */
+#define CG_HEIGHT_M          0.28f   /* CG height, metres                  */
 
 /* ---- M25 mass / inertia ---- */
 #define MASS_KG          260.0f
@@ -38,9 +35,7 @@
 #define LOAD_TRANSFER_TAU_S  0.08f
 
 /* ---- Wheel / drivetrain ---- */
-#define WHEEL_RADIUS_M   SHARED_WHEEL_RADIUS_M
-#define GEAR_RATIO       SHARED_GEAR_RATIO      /* motor-to-wheel gear ratio */
-#define MAX_SPEED_MS      30.0f
+#define MAX_SPEED_MS     30.0f
 
 /* ---- Ackermann steering ratios ---- */
 /* steer_wheel_angle * ratio = wheel angle (rad)                             */
