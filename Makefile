@@ -44,7 +44,23 @@ MC_SRCS = tests/test_motion_control.c \
 TV_SRCS = tests/test_tv.c \
           ECU_Firmware/src/torque_vectoring.c
 
-.PHONY: all run test clean
+EVAL     = $(HIL_BUILD)/eval_lap
+EVAL_SRCS = tests/eval_lap.c \
+            HIL_Firmware/src/motion_control.c \
+            HIL_Firmware/src/vehicle_model.c \
+            HIL_Firmware/src/track.c \
+            HIL_Firmware/src/path_planning.c \
+            ECU_Firmware/src/torque_vectoring.c
+
+PERF      = $(HIL_BUILD)/perf_sim
+PERF_SRCS = tests/perf_sim.c \
+            HIL_Firmware/src/motion_control.c \
+            HIL_Firmware/src/vehicle_model.c \
+            HIL_Firmware/src/track.c \
+            HIL_Firmware/src/path_planning.c \
+            ECU_Firmware/src/torque_vectoring.c
+
+.PHONY: all run test eval perf clean
 
 all: $(HIL_BUILD) $(ECU_BUILD) $(HIL_SIM) $(ECU_OBJ)
 
@@ -74,6 +90,21 @@ test: $(HIL_BUILD)
 
 run: all
 	$(HIL_SIM)
+
+# Headless lap evaluation: runs the full motion-control -> ECU -> vehicle loop
+# as fast as possible (no real-time sleep) and prints lap-tracking metrics —
+# mean/worst cross-track error, sharp-corner behaviour, cone contacts, lap time.
+# Used to catch regressions in how well the virtual driver follows the racing
+# line (especially the tight FSG hairpins).
+eval: $(HIL_BUILD)
+	$(CC) $(HIL_FLAGS) -o $(EVAL) $(EVAL_SRCS) -lm && $(EVAL)
+
+# Compute-speed benchmark: runs the full tick loop with no real-time sleep for
+# 1 wall-clock second and reports throughput (ticks/s, real-time factor, laps
+# per wall-second).  Pass a different budget as the first argument, e.g.
+# `HIL_Firmware/build/perf_sim 5` for a 5-second run.
+perf: $(HIL_BUILD)
+	$(CC) $(HIL_FLAGS) -o $(PERF) $(PERF_SRCS) -lm && $(PERF)
 
 clean:
 	rm -rf $(HIL_BUILD) $(ECU_BUILD)
