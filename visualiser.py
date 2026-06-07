@@ -11,9 +11,10 @@ How it works:
   - Keypresses in the pygame window are forwarded to hil_sim's stdin so the
     t / [ / ] / q controls still work.
 
-STATE protocol (20 fields):
+STATE protocol (21 fields):
   STATE x y heading speed_kmh yaw_deg_s fl fr rl rr tv kp lap elapsed_s
         steering_rad slip_angle_rad desired_yaw_rad_s ax_ms2 ay_ms2 vy_ms
+        target_speed_kmh
 
 Install pygame with:
     pip install pygame
@@ -42,7 +43,7 @@ if sys.platform == "win32" and not HIL_SIM_EXE.endswith(".exe"):
 
 # ---- Window and colours ----
 WINDOW_W = 1400
-WINDOW_H = 820
+WINDOW_H = 900   # raised to fit the SPEED-vs-TARGET chart added to the panel
 
 BLACK      = (10,  10,  10)
 DARK_GREY  = (30,  30,  30)
@@ -70,6 +71,9 @@ REGEN_COL = (80,  160, 255)
 
 YAW_ACTUAL_COL  = (100, 220, 150)   # green  – actual yaw rate
 YAW_DESIRED_COL = (255, 200,  50)   # yellow – desired yaw rate
+
+SPEED_ACTUAL_COL = (100, 220, 150)  # green  – actual speed
+SPEED_TARGET_COL = (255, 200,  50)  # yellow – planner target speed
 
 SLIP_GREEN  = ( 80, 220,  80)
 SLIP_YELLOW = (220, 200,  50)
@@ -224,10 +228,11 @@ class SimState:
         self.ax              = 0.0   # m/s^2
         self.ay              = 0.0   # m/s^2
         self.vy              = 0.0   # m/s
+        self.target_kmh      = 0.0   # planner target speed, km/h
 
     def parse(self, line):
         parts = line.split()
-        if len(parts) != 20 or parts[0] != "STATE":
+        if len(parts) != 21 or parts[0] != "STATE":
             return False
         try:
             self.x           = float(parts[1])
@@ -249,6 +254,7 @@ class SimState:
             self.ax          = float(parts[17])
             self.ay          = float(parts[18])
             self.vy          = float(parts[19])
+            self.target_kmh  = float(parts[20])
         except ValueError:
             return False
         return True
@@ -287,6 +293,7 @@ class LapTimer:
 
 # ---- History lengths ----
 YAW_HISTORY_LEN = 100   # ~5 s at 20 Hz
+SPEED_HISTORY_LEN = 100 # ~5 s at 20 Hz
 TRAJ_HISTORY_LEN = 500  # trajectory trace
 GG_HISTORY_LEN   = 200  # G-G diagram trail
 
@@ -400,7 +407,11 @@ def draw_car(surface, state):
 
 
 def draw_torque_bars(surface, font, state, panel_x, panel_y):
-    MAX_T     = 100.0
+    # Full-scale per direction.  Drive and regen are asymmetric: motor drive
+    # peaks at ~29.4 Nm, regen reaches -100 Nm, so scale each half to its own
+    # limit (a single ±100 scale made every drive bar an invisible sliver).
+    DRIVE_MAX = 29.4
+    REGEN_MAX = 100.0
     BAR_W     = 50
     HALF_H    = 32
     BAR_MAX_H = HALF_H * 2
@@ -420,10 +431,10 @@ def draw_torque_bars(surface, font, state, panel_x, panel_y):
         pygame.draw.rect(surface, MID_GREY, (bx, by, BAR_W, BAR_MAX_H))
 
         if torque > 0:
-            fill_h = int(HALF_H * min(torque, MAX_T) / MAX_T)
+            fill_h = int(HALF_H * min(torque, DRIVE_MAX) / DRIVE_MAX)
             pygame.draw.rect(surface, colour, (bx, zero_y - fill_h, BAR_W, fill_h))
         elif torque < 0:
-            fill_h = int(HALF_H * min(-torque, MAX_T) / MAX_T)
+            fill_h = int(HALF_H * min(-torque, REGEN_MAX) / REGEN_MAX)
             pygame.draw.rect(surface, REGEN_COL, (bx, zero_y, BAR_W, fill_h))
 
         pygame.draw.rect(surface, LIGHT_GREY, (bx, by, BAR_W, BAR_MAX_H), 1)
@@ -549,6 +560,42 @@ def draw_yaw_chart(surface, font_small, actual_hist, desired_hist, chart_x, char
     surface.blit(font_small.render("actual",  True, YAW_ACTUAL_COL),  (lx + 15, ly2))
 
 
+def draw_speed_chart(surface, font_small, actual_hist, target_hist, chart_x, chart_y,
+                     chart_w=230, chart_h=70):
+    """Time-series of actual speed (green) vs planner target speed (yellow), km/h.
+    Zero-based y-axis (speed is non-negative); auto-scales to TARGET_SPEED headroom."""
+    MAX_KMH = 80.0   # full-scale; TARGET_SPEED_MS=20 -> 72 km/h, leaves headroom
+
+    pygame.draw.rect(surface, DARK_GREY, (chart_x, chart_y, chart_w, chart_h))
+    pygame.draw.rect(surface, MID_GREY,  (chart_x, chart_y, chart_w, chart_h), 1)
+
+    base_y = chart_y + chart_h - 2          # zero speed at the bottom
+
+    def val_to_py(v):
+        frac = max(0.0, min(1.0, v / MAX_KMH))
+        return int(base_y - frac * (chart_h - 4))
+
+    def draw_series(hist, colour):
+        n = len(hist)
+        if n < 2:
+            return
+        pts = [(chart_x + int(i * (chart_w - 1) / max(SPEED_HISTORY_LEN - 1, 1)),
+                val_to_py(v))
+               for i, v in enumerate(hist)]
+        pygame.draw.lines(surface, colour, False, pts, 2)
+
+    draw_series(target_hist, SPEED_TARGET_COL)
+    draw_series(actual_hist, SPEED_ACTUAL_COL)
+
+    lx = chart_x + 4
+    ly = chart_y + 2
+    pygame.draw.line(surface, SPEED_TARGET_COL, (lx, ly + 5), (lx + 12, ly + 5), 2)
+    surface.blit(font_small.render("target", True, SPEED_TARGET_COL), (lx + 15, ly))
+    ly2 = ly + 14
+    pygame.draw.line(surface, SPEED_ACTUAL_COL, (lx, ly2 + 5), (lx + 12, ly2 + 5), 2)
+    surface.blit(font_small.render("actual", True, SPEED_ACTUAL_COL), (lx + 15, ly2))
+
+
 def draw_gg_diagram(surface, font_small, gg_hist, gx, gy, size=130):
     """
     G-G (friction circle) diagram.  Shows longitudinal (ax) vs lateral (ay) acceleration.
@@ -647,7 +694,8 @@ def draw_lap_comparison(surface, font_large, font_small, lap_timer, px, py):
 
 
 def draw_panel(surface, font_large, font, font_small,
-               state, lap_timer, actual_yaw_hist, desired_yaw_hist, gg_hist):
+               state, lap_timer, actual_yaw_hist, desired_yaw_hist, gg_hist,
+               actual_spd_hist, target_spd_hist):
     """Draw the data panel on the right side of the window."""
     px = VIEW_X + VIEW_W + 30
     py = 20
@@ -718,6 +766,17 @@ def draw_panel(surface, font_large, font, font_small,
     surface.blit(font_large.render(f"{lat_g:.2f} g",              True, WHITE), (col2, py))
     py += font_large.get_height() + 4
 
+    # Speed vs planner target, time-series.  The actual line dropping toward the
+    # target line at corner entry shows the car bleeding speed to plan; actual
+    # riding above target = arriving too fast.
+    over_target = state.speed_kmh > state.target_kmh + 1.0
+    hdr_col     = US_COL if over_target else LIGHT_GREY
+    py = label(f"SPEED vs TARGET  (km/h)   tgt {state.target_kmh:.0f}", py, colour=hdr_col)
+    draw_speed_chart(surface, font_small, actual_spd_hist, target_spd_hist,
+                     px, py, chart_w=sep_w, chart_h=60)
+    py += 60 + 6
+    py = sep(py)
+
     # Yaw rate + steering wheel
     WHEEL_R   = 26
     WHEEL_COL = px + 175
@@ -764,7 +823,7 @@ def draw_panel(surface, font_large, font, font_small,
     py = sep(py)
 
     # Torque bars
-    py = label("WHEEL TORQUES  (Nm, ±100)", py)
+    py = label("WHEEL TORQUES  (Nm, +29 / -100)", py)
     py += 4
     draw_torque_bars(surface, font_small, state, px, py)
     py += (64 + 26 + 10) * 2 - 10 + 6
@@ -859,6 +918,8 @@ def main():
     lap_timer        = LapTimer()
     actual_yaw_hist  = collections.deque([0.0] * YAW_HISTORY_LEN, maxlen=YAW_HISTORY_LEN)
     desired_yaw_hist = collections.deque([0.0] * YAW_HISTORY_LEN, maxlen=YAW_HISTORY_LEN)
+    actual_spd_hist  = collections.deque([0.0] * SPEED_HISTORY_LEN, maxlen=SPEED_HISTORY_LEN)
+    target_spd_hist  = collections.deque([0.0] * SPEED_HISTORY_LEN, maxlen=SPEED_HISTORY_LEN)
     traj_deque       = collections.deque(maxlen=TRAJ_HISTORY_LEN)
     gg_hist          = collections.deque(maxlen=GG_HISTORY_LEN)
     running          = True
@@ -882,6 +943,8 @@ def main():
             if state.parse(latest):
                 actual_yaw_hist.append(math.radians(state.yaw_degs))
                 desired_yaw_hist.append(state.desired_yaw)
+                actual_spd_hist.append(state.speed_kmh)
+                target_spd_hist.append(state.target_kmh)
                 traj_deque.append((state.x, state.y, state.tv_enabled))
                 gg_hist.append((state.ax / 9.81, state.ay / 9.81))
                 lap_timer.update(state)
@@ -936,7 +999,8 @@ def main():
         screen.blit(mode_lbl, (VIEW_X + 4, VIEW_Y + VIEW_H - mode_lbl.get_height() - 4))
 
         draw_panel(screen, font_large, font_medium, font_small,
-                   state, lap_timer, actual_yaw_hist, desired_yaw_hist, gg_hist)
+                   state, lap_timer, actual_yaw_hist, desired_yaw_hist, gg_hist,
+                   actual_spd_hist, target_spd_hist)
 
         pygame.draw.rect(screen, MID_GREY, (VIEW_X, VIEW_Y, VIEW_W, VIEW_H), 1)
         pygame.display.flip()

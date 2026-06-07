@@ -42,6 +42,34 @@ static float wrap_pi(float a)
     return a;
 }
 
+/*
+ * Signed path curvature (1/m) at waypoint idx, from the turn of the path
+ * tangent across the neighbouring segments.  Sign follows the turn direction:
+ * positive = left turn (CCW), matching the steering convention.  A ±2-waypoint
+ * baseline is used so a sharp apex is not averaged flat.
+ */
+static float signed_path_curvature(const Track *track, int idx)
+{
+    int count = track->count;
+    int p = (idx - 2 + count) % count;
+    int c =  idx              % count;
+    int q = (idx + 2)         % count;
+
+    float t1x = track->points[c].x - track->points[p].x;
+    float t1y = track->points[c].y - track->points[p].y;
+    float t2x = track->points[q].x - track->points[c].x;
+    float t2y = track->points[q].y - track->points[c].y;
+
+    float l1 = sqrtf(t1x*t1x + t1y*t1y);
+    float l2 = sqrtf(t2x*t2x + t2y*t2y);
+    if (l1 < 1e-4f || l2 < 1e-4f) return 0.0f;
+
+    /* Change in tangent heading over the arc length between the segment mids. */
+    float dtheta = wrap_pi(atan2f(t2y, t2x) - atan2f(t1y, t1x));
+    float ds     = 0.5f * (l1 + l2);
+    return dtheta / ds;
+}
+
 
 /* ---- Two-pass speed planner ---- */
 
@@ -70,14 +98,28 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
      * the corner the car is currently in is never skipped.
      */
     for (i = 0; i < SPEED_PLAN_STEPS; i++) {
-        int cprev = (start_idx + i - 1 + count) % count;
         int ccur  = (start_idx + i    ) % count;
-        int cnext = (start_idx + i + 1) % count;
 
-        float kappa = menger_curvature(
-            track->points[cprev].x, track->points[cprev].y,
-            track->points[ccur].x,  track->points[ccur].y,
-            track->points[cnext].x, track->points[cnext].y);
+        /*
+         * Curvature at this point, taken as the MAX over several stencil
+         * spacings (±1, ±2, ±3 waypoints).  A single ±1 stencil on ~2.5 m
+         * spacing under-reads a sharp hairpin apex (three closely spaced points
+         * look almost straight), letting the planner carry too much speed into
+         * the corner so the car understeers wide.  Sampling wider baselines and
+         * keeping the worst case captures the true apex sharpness without
+         * over-slowing gentle corners.
+         */
+        float kappa = 0.0f;
+        for (int d = 1; d <= 3; d++) {
+            int cprev = (start_idx + i - d + count) % count;
+            int cnext = (start_idx + i + d        ) % count;
+            float k = menger_curvature(
+                track->points[cprev].x, track->points[cprev].y,
+                track->points[ccur].x,  track->points[ccur].y,
+                track->points[cnext].x, track->points[cnext].y);
+            if (k > kappa) kappa = k;
+        }
+        int cnext = (start_idx + i + 1) % count;
 
         float v_curve = (kappa > 1e-4f)
                         ? sqrtf(MAX_LATERAL_ACCEL_MS2 / kappa)
@@ -191,7 +233,8 @@ static float boundary_steer_correction(float x, float y, const Track *track)
 
 /* ---- Public update ---- */
 
-float motion_control_update(VehicleState *state, const Track *track)
+float motion_control_update(VehicleState *state, const Track *track,
+                            float *out_target_speed)
 {
     /*
      * The controller tracks its own progress index along the racing line with
@@ -236,13 +279,43 @@ float motion_control_update(VehicleState *state, const Track *track)
     float to_fa_y = fa_y - track->points[i0].y;
     float cte = -(to_fa_x * (-seg_y * inv_len) + to_fa_y * (seg_x * inv_len));
 
-    float steer = heading_error + atanf(K_CTE * cte / (vx + K_SOFT));
+    /* Curvature feedforward: align the wheel with the curvature of the path
+     * WHERE THE CAR IS (nearest segment), not ahead of it.  A look-ahead made
+     * the car start turning before the bend on tight hairpins -- it cut to the
+     * inside and clipped the apex cones, then ran wide on exit.  Evaluating at
+     * the current position, and letting the slew-rate limit supply the natural
+     * lead, keeps turn-in on the apex.  Gain held just under the full kinematic
+     * value so it pre-aligns without over-rotating.
+     *
+     * The per-waypoint curvature is a step function, so sampling it at the bare
+     * index i0 makes steer_ff (and thus the desired yaw rate) jump every time
+     * the car crosses a waypoint -- a sawtooth no real driver would produce.
+     * Interpolate between i0 and i0+1 by the projection parameter t so the
+     * feedforward varies smoothly along the path. */
+    float kappa_i0   = signed_path_curvature(track, i0);
+    float kappa_i1   = signed_path_curvature(track, i1);
+    float kappa_ff   = kappa_i0 + t * (kappa_i1 - kappa_i0);
+    float steer_ff   = K_CURV_FF * atanf(WHEELBASE_M * kappa_ff);
+
+    float steer = steer_ff
+                + heading_error
+                + atanf(K_CTE * cte / (vx + K_SOFT));
 
     /* Gentle cone repulsion as a safety net */
     steer += boundary_steer_correction(state->x, state->y, track);
 
     if (steer >  MAX_STEER_RAD) steer =  MAX_STEER_RAD;
     if (steer < -MAX_STEER_RAD) steer = -MAX_STEER_RAD;
+
+    /* Slew-rate limit: a driver / steering actuator cannot snap the wheel
+     * instantly, so cap how far the commanded angle may move in one tick.
+     * state->steering still holds last tick's command. */
+    {
+        float max_step = MAX_STEER_RATE_RADS * MC_DT_S;
+        float dsteer   = steer - state->steering;
+        if (dsteer >  max_step) steer = state->steering + max_step;
+        if (dsteer < -max_step) steer = state->steering - max_step;
+    }
 
     state->steering = steer;
 
@@ -268,6 +341,8 @@ float motion_control_update(VehicleState *state, const Track *track)
     /* TORQUE — P-throttle + drag feedforward; P-brake                     */
     /* ------------------------------------------------------------------ */
 
+    if (out_target_speed) *out_target_speed = target_speed;
+
     float speed_error = target_speed - vx;
     float driver_torque;
 
@@ -275,8 +350,10 @@ float motion_control_update(VehicleState *state, const Track *track)
         driver_torque = DRAG_FF_NM * vx + SPEED_KP_NM * speed_error;
 
         /* Traction circle: cut throttle in proportion to lateral grip already
-         * in use, so the car only powers up as the corner opens (ay -> 0). */
-        float lat_ratio = fabsf(state->ay) / LAT_GRIP_REF_MS2;
+         * in use, so the car only powers up as the corner opens (ay -> 0).
+         * Use the roll-lagged ay_filt, not the raw same-tick ay: the latter
+         * carries single-tick noise that would chop the throttle 0<->max. */
+        float lat_ratio = fabsf(state->ay_filt) / LAT_GRIP_REF_MS2;
         if (lat_ratio > 1.0f) lat_ratio = 1.0f;
         float grip_factor = sqrtf(1.0f - lat_ratio * lat_ratio);
         driver_torque *= grip_factor;

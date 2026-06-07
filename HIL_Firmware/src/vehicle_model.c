@@ -24,27 +24,51 @@ static const float PI = 3.14159265358979323846f;
  *
  * 2. Aerodynamic downforce + quadratic drag
  *    Downforce = 0.5 * ρ * A * CLA * vx² adds to the static axle normal loads,
- *    so available lateral grip increases with speed.  The M25 CLA = 5.1 gives
- *    ~645 N extra load at 14 m/s, raising peak lateral g by ~25 %.
- *    Drag = 0.5 * ρ * A * CDA * vx² replaces the old linear coefficient and
- *    is the physically correct form.
+ *    so available lateral grip increases with speed.
+ *    Drag = 0.5 * ρ * A * CDA * vx² is the physically correct quadratic form.
  *
  * 3. M25 parameters
  *    mass=260 kg, Izz=140 kg·m², lf=0.77 m, lr=0.78 m (nearly neutral balance),
- *    track=1.30 m, wheelRadius=0.254 m.  The shorter wheelbase (1.55 m vs the
- *    old 2.4 m) makes the car respond faster to steering — correct for FSG.
+ *    track=1.30 m, wheelRadius=0.254 m.
  *
- * Structure (unchanged from previous version)
- * --------------------------------------------
- *   1. Drive / drag
- *   2. TV yaw moment from left/right torque differential
- *   3. Normal loads (static + aero downforce + longitudinal transfer)
- *   4. Axle slip angles
- *   5. Lateral tyre forces  ← now Pacejka
- *   6. Equations of motion
- *   7. Integration
- *   8. Position and heading integration
- *   9. Body slip angle
+ * 4. Ackermann per-wheel steering geometry
+ *    Inner and outer wheel angles are computed separately from the signed
+ *    reference steering input using INNER_STEERING_RATIO / OUTER_STEERING_RATIO.
+ *    Per-wheel FL/FR steer angles are used throughout the force calculations.
+ *
+ * 5. Full 4-corner model (the big accuracy gain)
+ *    Each wheel is treated individually rather than lumped into front/rear
+ *    axles:
+ *      • Velocity at each corner = v_CoG + ω × r_corner, so the slip angle is
+ *        measured from that tyre's own velocity vector.
+ *      • Normal load per wheel includes lateral load transfer (the outer tyres
+ *        gain load, the inner tyres shed it), on top of the static split, aero
+ *        downforce, and longitudinal transfer.
+ *      • Pacejka runs per wheel, so the loaded outer tyres carry most of the
+ *        cornering force and the unloaded inner tyres saturate first — the load
+ *        sensitivity that gives torque vectoring something to exploit.
+ *      • Each wheel's Fx/Fy is rotated into the body frame through its own
+ *        steer angle and summed into the force/yaw balance about the CG.
+ *    A stillstand guard zeroes slip below 0.1 m/s to avoid atan blow-up at rest.
+ *
+ * 6. Per-wheel RPM outputs
+ *    Wheelspeeds (motor RPM) are computed from each corner's longitudinal
+ *    velocity component and fed back into SensorData for the ECU — the ECU can
+ *    now sense the real left/right speed split, not a single faked value.
+ *
+ * Structure
+ * ---------
+ *   1. Ackermann steering
+ *   2. Aerodynamic forces (downforce + drag)
+ *   3. Per-wheel normal loads (static + aero + longitudinal + lateral transfer)
+ *   4. 4-corner velocities and per-wheel slip angles
+ *   5. Lateral tyre forces  (Pacejka, per wheel)
+ *   6. Per-wheel longitudinal drive force
+ *   7. Equations of motion (per-wheel force/moment summation)
+ *   8. Integration
+ *   9. Position and heading integration
+ *  10. Per-wheel RPM outputs
+ *  11. Body slip angle
  */
 
 
@@ -55,19 +79,17 @@ static const float PI = 3.14159265358979323846f;
 /*
  * Returns the lateral force for one axle.
  *
- * alpha — slip angle in our sign convention:
- *           positive = tyre pointing left of travel → force to the left (positive Fy)
+ * alpha — slip angle:  positive = tyre pointing left of travel → Fy left (+)
  * Fz    — total normal load on the axle, N
  *
  * Formula:  Fy = D * Fz * sin( C * atan( B*κ − E*(B*κ − atan(B*κ)) ) )
- * where κ = −alpha maps our convention to the reference formula's convention
- * (the reference uses κ < 0 for a left-cornering front tyre).
+ * κ = −alpha maps our sign convention to the reference formula's convention.
  * With C < 0 this gives Fy > 0 (leftward) for positive alpha. ✓
  */
 static float pacejka_lat(float alpha, float Fz)
 {
-    float k    = -alpha;  /* sign convention: see comment above */
-    float Bk   = TYRE_B * k;
+    float k     = -alpha;
+    float Bk    = TYRE_B * k;
     float shape = sinf(TYRE_C * atanf(Bk - TYRE_E * (Bk - atanf(Bk))));
     return TYRE_D * Fz * shape;
 }
@@ -79,16 +101,22 @@ static float pacejka_lat(float alpha, float Fz)
 
 void vehicle_model_init(VehicleState *s, float start_x, float start_y, float start_heading)
 {
-    s->x          = start_x;
-    s->y          = start_y;
-    s->heading    = start_heading;
-    s->velocity   = 0.0f;
-    s->vy         = 0.0f;
-    s->yaw_rate   = 0.0f;
-    s->slip_angle = 0.0f;
-    s->steering   = 0.0f;
-    s->ax         = 0.0f;
-    s->ay         = 0.0f;
+    s->x                    = start_x;
+    s->y                    = start_y;
+    s->heading              = start_heading;
+    s->velocity             = 0.0f;
+    s->vy                   = 0.0f;
+    s->yaw_rate             = 0.0f;
+    s->slip_angle           = 0.0f;
+    s->steering             = 0.0f;
+    s->steer_fl             = 0.0f;
+    s->steer_fr             = 0.0f;
+    s->ax                   = 0.0f;
+    s->ay                   = 0.0f;
+    s->ax_filt              = 0.0f;
+    s->ay_filt              = 0.0f;
+    for (int i = 0; i < 4; i++)
+        s->wheelspeed[i] = 0.0f;
 }
 
 
@@ -99,94 +127,202 @@ void vehicle_model_init(VehicleState *s, float start_x, float start_y, float sta
 void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
 {
     float vx = s->velocity;
+    float vy = s->vy;
+    float r  = s->yaw_rate;
     float g  = 9.81f;
 
     /* ------------------------------------------------------------------ */
-    /* 1. Aerodynamic forces                                               */
+    /* 1. Ackermann per-wheel steering angles                               */
     /* ------------------------------------------------------------------ */
 
-    float q          = 0.5f * AIR_DENSITY * AERO_AREA * vx * vx;  /* dynamic pressure × area */
-    float F_downforce = CLA * q;   /* extra normal force (positive = down) */
-    float F_drag      = CDA * q;   /* drag force opposing motion           */
-
-    /* ------------------------------------------------------------------ */
-    /* 2. Longitudinal drive force                                          */
-    /* ------------------------------------------------------------------ */
-
-    float total_torque = t->fl + t->fr + t->rl + t->rr;
-    float drive_force  = total_torque / WHEEL_RADIUS_M;
-    float net_force    = drive_force - F_drag;
-    s->ax              = net_force / MASS_KG;   /* stored for G-G display */
-
-    /* ------------------------------------------------------------------ */
-    /* 3. TV yaw moment from left/right torque differential                */
-    /* ------------------------------------------------------------------ */
-
-    float torque_diff_front = t->fr - t->fl;
-    float torque_diff_rear  = t->rr - t->rl;
-    float yaw_moment_tv     = (torque_diff_front + torque_diff_rear)
-                              * (TRACK_WIDTH_M * 0.5f) / WHEEL_RADIUS_M;
-
-    /* ------------------------------------------------------------------ */
-    /* 4. Normal (vertical) loads                                          */
-    /*                                                                     */
-    /* Static load split by CG position.                                  */
-    /* Aero downforce split 50/50 front and rear.                         */
-    /* Longitudinal transfer: positive ax (acceleration) loads the rear.  */
-    /* ------------------------------------------------------------------ */
-
-    float Fz_front = MASS_KG * g * (CG_TO_REAR_M  / WHEELBASE_M) + F_downforce * 0.5f;
-    float Fz_rear  = MASS_KG * g * (CG_TO_FRONT_M / WHEELBASE_M) + F_downforce * 0.5f;
-
-    float dFz_long = s->ax * MASS_KG * CG_HEIGHT_M / WHEELBASE_M;
-    Fz_front -= dFz_long;
-    Fz_rear  += dFz_long;
-
-    if (Fz_front < 50.0f) Fz_front = 50.0f;
-    if (Fz_rear  < 50.0f) Fz_rear  = 50.0f;
-
-    /* ------------------------------------------------------------------ */
-    /* 5. Axle slip angles                                                 */
-    /* ------------------------------------------------------------------ */
-
-    float alpha_f = 0.0f;
-    float alpha_r = 0.0f;
-
-    if (vx > 0.5f) {
-        alpha_f = s->steering
-                  - atanf((s->vy + CG_TO_FRONT_M * s->yaw_rate) / vx);
-        alpha_r = -atanf((s->vy - CG_TO_REAR_M  * s->yaw_rate) / vx);
+    if (s->steering > 0.0f) {
+        s->steer_fl = INNER_STEERING_RATIO * s->steering;
+        s->steer_fr = OUTER_STEERING_RATIO * s->steering;
+    } else {
+        s->steer_fl = OUTER_STEERING_RATIO * s->steering;
+        s->steer_fr = INNER_STEERING_RATIO * s->steering;
     }
 
     /* ------------------------------------------------------------------ */
-    /* 6. Lateral tyre forces  (Pacejka Magic Formula)                    */
+    /* 2. Aerodynamic forces                                                */
     /* ------------------------------------------------------------------ */
 
-    float Fy_f = pacejka_lat(alpha_f, Fz_front);
-    float Fy_r = pacejka_lat(alpha_r, Fz_rear);
+    float q           = 0.5f * AIR_DENSITY * AERO_AREA * vx * vx;
+    float F_downforce = CLA * q;
+    float F_drag      = CDA * q;
 
     /* ------------------------------------------------------------------ */
-    /* 7. Equations of motion                                              */
+    /* 3. Normal loads — per wheel                                          */
+    /*    static split + aero (50/50) + longitudinal + lateral transfer    */
     /*                                                                     */
-    /*   M*(dvy/dt) = Fy_f + Fy_r − M*vx*r   (lateral, with Coriolis)   */
-    /*   Iz*(dr/dt) = lf*Fy_f − lr*Fy_r + Mtv                           */
+    /* Longitudinal transfer (ax > 0 → loads rear) is shared across the    */
+    /* two wheels of an axle.  Lateral transfer (ay > 0 → loads the right  */
+    /* wheels, since +ay points left) is split front/rear by the static    */
+    /* axle-load fraction — a good approximation without an explicit roll  */
+    /* model.  Per-wheel Fz lets the Pacejka tyres saturate individually,  */
+    /* so the heavily-loaded outer tyres carry most of the cornering force  */
+    /* and the lightly-loaded inner tyres give up earlier — exactly the    */
+    /* load sensitivity that makes torque vectoring worthwhile.            */
     /* ------------------------------------------------------------------ */
 
-    float vy_dot = (Fy_f + Fy_r) / MASS_KG - vx * s->yaw_rate;
-    float r_dot  = (CG_TO_FRONT_M * Fy_f
-                    - CG_TO_REAR_M  * Fy_r
-                    + yaw_moment_tv)
-                   / YAW_INERTIA_KGM2;
+    float Fz_front_axle = MASS_KG * g * (CG_TO_REAR_M  / WHEELBASE_M) + F_downforce * 0.5f;
+    float Fz_rear_axle  = MASS_KG * g * (CG_TO_FRONT_M / WHEELBASE_M) + F_downforce * 0.5f;
 
-    s->ay = vy_dot + vx * s->yaw_rate;   /* lateral accel for G-G display */
+    /* Load transfer is driven by the roll/pitch-lagged accelerations (see
+     * vehicle_config.h).  Using the lagged values — not the same-tick ax/ay
+     * that the transfer itself helps create — is what keeps the model from
+     * ringing tick-to-tick. */
+    float dFz_long = s->ax_filt * MASS_KG * CG_HEIGHT_M / WHEELBASE_M;
+    Fz_front_axle -= dFz_long;
+    Fz_rear_axle  += dFz_long;
+
+    if (Fz_front_axle < 50.0f) Fz_front_axle = 50.0f;
+    if (Fz_rear_axle  < 50.0f) Fz_rear_axle  = 50.0f;
+
+    /* Lateral load transfer per axle: ΔFz = m_axle * ay * h / track.        */
+    /* m_axle is that axle's share of sprung mass (by the static CG split);   */
+    /* using the static split here avoids feeding aero/longitudinal transfer  */
+    /* back into the lateral term. */
+    float m_front = MASS_KG * (CG_TO_REAR_M  / WHEELBASE_M);
+    float m_rear  = MASS_KG * (CG_TO_FRONT_M / WHEELBASE_M);
+    float dFz_lat_front = m_front * s->ay_filt * CG_HEIGHT_M / TRACK_WIDTH_FRONT_M;
+    float dFz_lat_rear  = m_rear  * s->ay_filt * CG_HEIGHT_M / TRACK_WIDTH_REAR_M;
+
+    /* +ay loads the RIGHT wheels (FR, RR); left wheels (FL, RL) unload */
+    float Fz_fl = 0.5f * Fz_front_axle - dFz_lat_front;
+    float Fz_fr = 0.5f * Fz_front_axle + dFz_lat_front;
+    float Fz_rl = 0.5f * Fz_rear_axle  - dFz_lat_rear;
+    float Fz_rr = 0.5f * Fz_rear_axle  + dFz_lat_rear;
+
+    if (Fz_fl < 25.0f) Fz_fl = 25.0f;
+    if (Fz_fr < 25.0f) Fz_fr = 25.0f;
+    if (Fz_rl < 25.0f) Fz_rl = 25.0f;
+    if (Fz_rr < 25.0f) Fz_rr = 25.0f;
 
     /* ------------------------------------------------------------------ */
-    /* 8. Integrate states                                                 */
+    /* 4. 4-corner velocities and per-wheel slip angles                     */
+    /*                                                                     */
+    /* v_corner = v_CoG + ω × r_corner  (2-D: ω = r k̂)                   */
+    /*   v_corner_x = vx − r * r_corner_y                                 */
+    /*   v_corner_y = vy + r * r_corner_x                                 */
+    /*                                                                     */
+    /* Each tyre's slip angle is measured from ITS OWN velocity vector, so  */
+    /* the toe-out from Ackermann and the fore/aft yaw-induced lateral      */
+    /* velocity are captured per corner rather than lumped at the axle      */
+    /* mid-point.                                                          */
+    /* ------------------------------------------------------------------ */
+
+    float half_sf = TRACK_WIDTH_FRONT_M * 0.5f;
+    float half_sr = TRACK_WIDTH_REAR_M  * 0.5f;
+
+    /* Corner positions in vehicle frame (x = forward, y = left) */
+    float rx_fl =  CG_TO_FRONT_M,  ry_fl =  half_sf;
+    float rx_fr =  CG_TO_FRONT_M,  ry_fr = -half_sf;
+    float rx_rl = -CG_TO_REAR_M,   ry_rl =  half_sr;
+    float rx_rr = -CG_TO_REAR_M,   ry_rr = -half_sr;
+
+    float vx_fl = vx - r * ry_fl,  vy_fl = vy + r * rx_fl;
+    float vx_fr = vx - r * ry_fr,  vy_fr = vy + r * rx_fr;
+    float vx_rl = vx - r * ry_rl,  vy_rl = vy + r * rx_rl;
+    float vx_rr = vx - r * ry_rr,  vy_rr = vy + r * rx_rr;
+
+    float eps = 1e-5f;
+
+    /* Stillstand guard: zero slip below 0.1 m/s */
+    int stillstand = (vx * vx + vy * vy < 0.01f) && (fabsf(r) < 0.001f);
+
+    float alpha_fl = 0.0f, alpha_fr = 0.0f;
+    float alpha_rl = 0.0f, alpha_rr = 0.0f;
+
+    if (!stillstand && vx > 0.5f) {
+        /* Per-wheel slip = wheel steer angle − velocity-vector angle */
+        alpha_fl = s->steer_fl - atanf(vy_fl / ((fabsf(vx_fl) > eps) ? vx_fl : eps));
+        alpha_fr = s->steer_fr - atanf(vy_fr / ((fabsf(vx_fr) > eps) ? vx_fr : eps));
+        alpha_rl =             - atanf(vy_rl / ((fabsf(vx_rl) > eps) ? vx_rl : eps));
+        alpha_rr =             - atanf(vy_rr / ((fabsf(vx_rr) > eps) ? vx_rr : eps));
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* 5. Lateral tyre forces  (Pacejka, per wheel)                        */
+    /* ------------------------------------------------------------------ */
+
+    float Fy_fl = pacejka_lat(alpha_fl, Fz_fl);
+    float Fy_fr = pacejka_lat(alpha_fr, Fz_fr);
+    float Fy_rl = pacejka_lat(alpha_rl, Fz_rl);
+    float Fy_rr = pacejka_lat(alpha_rr, Fz_rr);
+
+    /* ------------------------------------------------------------------ */
+    /* 6. Per-wheel longitudinal drive force                                */
+    /*                                                                     */
+    /* Gate: suppress force when the wheel has a small command AND the car  */
+    /* is barely moving (avoids creep artefacts at standstill).            */
+    /* ------------------------------------------------------------------ */
+
+    float rpm2ms = WHEEL_RADIUS_M * 2.0f * PI / (GEAR_RATIO * 60.0f);
+
+    float Fx_fl = GEAR_RATIO * t->fl / WHEEL_RADIUS_M;
+    float Fx_fr = GEAR_RATIO * t->fr / WHEEL_RADIUS_M;
+    float Fx_rl = GEAR_RATIO * t->rl / WHEEL_RADIUS_M;
+    float Fx_rr = GEAR_RATIO * t->rr / WHEEL_RADIUS_M;
+
+    Fx_fl *= ((t->fl > 0.5f) || (vx > 0.3f)) ? 1.0f : 0.0f;
+    Fx_fr *= ((t->fr > 0.5f) || (vx > 0.3f)) ? 1.0f : 0.0f;
+    Fx_rl *= ((t->rl > 0.5f) || (vx > 0.3f)) ? 1.0f : 0.0f;
+    Fx_rr *= ((t->rr > 0.5f) || (vx > 0.3f)) ? 1.0f : 0.0f;
+
+    float cos_fl = cosf(s->steer_fl), sin_fl = sinf(s->steer_fl);
+    float cos_fr = cosf(s->steer_fr), sin_fr = sinf(s->steer_fr);
+
+    /* ------------------------------------------------------------------ */
+    /* 7. Equations of motion                                               */
+    /*                                                                     */
+    /* Per-wheel front tyre forces resolve into the vehicle frame through    */
+    /* that wheel's own steer angle:                                         */
+    /*   Fx_body =  cos(δ)*Fx − sin(δ)*Fy                                   */
+    /*   Fy_body =  sin(δ)*Fx + cos(δ)*Fy                                   */
+    /* Rear wheels are unsteered (δ = 0).                                   */
+    /* ------------------------------------------------------------------ */
+
+    float Fx_fl_body = cos_fl * Fx_fl - sin_fl * Fy_fl;
+    float Fx_fr_body = cos_fr * Fx_fr - sin_fr * Fy_fr;
+    float Fy_fl_body = sin_fl * Fx_fl + cos_fl * Fy_fl;
+    float Fy_fr_body = sin_fr * Fx_fr + cos_fr * Fy_fr;
+
+    float ax_tires = (Fx_fl_body + Fx_fr_body + Fx_rl + Fx_rr) / MASS_KG;
+    s->ax = ax_tires - F_drag / MASS_KG;
+
+    float vy_dot = (Fy_fl_body + Fy_fr_body + Fy_rl + Fy_rr) / MASS_KG
+                   - vx * r;
+
+    /* Yaw moment is the sum of each wheel-force's moment about the CG.       */
+    /* A body-frame force (Fx_body, Fy_body) at corner (rx, ry) contributes   */
+    /*   M = rx * Fy_body − ry * Fx_body.                                     */
+    /* The Fx terms (×half-track) carry the torque-vectoring differential;    */
+    /* the Fy terms (×lf/lr) carry the conventional cornering yaw moment.     */
+    float r_dot = (
+          (rx_fl * Fy_fl_body - ry_fl * Fx_fl_body)
+        + (rx_fr * Fy_fr_body - ry_fr * Fx_fr_body)
+        + (rx_rl * Fy_rl      - ry_rl * Fx_rl     )
+        + (rx_rr * Fy_rr      - ry_rr * Fx_rr     )
+        ) / YAW_INERTIA_KGM2;
+
+    s->ay = vy_dot + vx * r;   /* lateral accel for G-G display */
+
+    /* ------------------------------------------------------------------ */
+    /* 8. Integrate states                                                  */
     /* ------------------------------------------------------------------ */
 
     s->vy       += vy_dot * dt;
     s->yaw_rate += r_dot  * dt;
     s->velocity += s->ax  * dt;
+
+    /* First-order lag on the accelerations that drive load transfer.
+     * alpha = dt / (tau + dt) is the discrete one-pole coefficient. */
+    {
+        float alpha_lp = dt / (LOAD_TRANSFER_TAU_S + dt);
+        s->ax_filt += alpha_lp * (s->ax - s->ax_filt);
+        s->ay_filt += alpha_lp * (s->ay - s->ay_filt);
+    }
 
     /* Damp lateral motion at very low speed to avoid division-by-vx blowup */
     if (vx < 0.5f) {
@@ -194,8 +330,7 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
         s->yaw_rate *= 0.90f;
     }
 
-    /* Yaw-rate stability limiter: r cannot exceed peak_mu * g / vx
-     * (physical limit set by tyres regardless of applied yaw moment) */
+    /* Yaw-rate physical limit: r ≤ μ*g / vx */
     if (vx > 1.0f) {
         float r_max = (MU_TYRE * g) / vx;
         if (s->yaw_rate >  r_max) s->yaw_rate =  r_max;
@@ -206,7 +341,7 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     if (s->velocity > MAX_SPEED_MS) s->velocity = MAX_SPEED_MS;
 
     /* ------------------------------------------------------------------ */
-    /* 9. Integrate heading and position                                   */
+    /* 9. Integrate heading and position                                    */
     /* ------------------------------------------------------------------ */
 
     s->heading += s->yaw_rate * dt;
@@ -217,10 +352,21 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     s->y += (s->velocity * sin_h + s->vy * cos_h) * dt;
 
     /* ------------------------------------------------------------------ */
-    /* 10. Body slip angle                                                 */
+    /* 10. Per-wheel RPM outputs (motor shaft frame)                        */
     /* ------------------------------------------------------------------ */
 
-    s->slip_angle = (s->velocity > 0.5f) ? atanf(s->vy / s->velocity) : 0.0f;
+    s->wheelspeed[WHEEL_FL] = vx_fl / rpm2ms;
+    s->wheelspeed[WHEEL_FR] = vx_fr / rpm2ms;
+    s->wheelspeed[WHEEL_RL] = vx_rl / rpm2ms;
+    s->wheelspeed[WHEEL_RR] = vx_rr / rpm2ms;
+
+    /* ------------------------------------------------------------------ */
+    /* 11. Body slip angle                                                  */
+    /* ------------------------------------------------------------------ */
+
+    s->slip_angle = (s->velocity > 0.5f)
+                    ? atanf(s->vy / s->velocity)
+                    : 0.0f;
 
     while (s->heading >  PI) s->heading -= 2.0f * PI;
     while (s->heading < -PI) s->heading += 2.0f * PI;

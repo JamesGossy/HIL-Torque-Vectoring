@@ -1,4 +1,5 @@
 #include "../include/torque_vectoring.h"
+#include "../../shared/vehicle_constants.h"
 #include <math.h>
 
 /*
@@ -48,9 +49,24 @@
  *   yaw moment maps, tyre models) but this captures the essential idea.
  */
 
-/* Vehicle wheelbase -- must match vehicle_model.h. Kept separate here because
- * the ECU does not include the HIL headers. */
-#define TV_WHEELBASE_M  2.4f
+/* Vehicle geometry — sourced from shared/vehicle_constants.h so these values
+ * stay in sync with vehicle_config.h on the HIL side.  The ECU does not
+ * include HIL headers, but it can include shared/ headers. */
+#define TV_WHEELBASE_M    SHARED_WHEELBASE_M
+#define TV_TRACK_WIDTH_M  SHARED_TRACK_WIDTH_M
+#define TV_WHEEL_RADIUS_M SHARED_WHEEL_RADIUS_M
+
+/* Motor-to-wheel gear ratio, kept for reference only.  The ECU works entirely
+ * in MOTOR torque (both driver_torque in and the WheelTorques out); the vehicle
+ * model is what applies the gear ratio to get wheel force.  Do NOT multiply the
+ * ECU outputs by this -- that double-counts the ratio and saturates the motors. */
+#define TV_GEAR_RATIO   SHARED_GEAR_RATIO
+
+/* Weight on the wheel-speed-derived yaw estimate when fused with the IMU.
+ * 0 = trust IMU only, 1 = trust wheel speeds only.  The wheel-speed estimate
+ * is noise-free but degrades under wheel slip/scrub, so we keep the IMU as the
+ * primary source and use the wheel-speed channel as a corroborating signal. */
+#define TV_WHEEL_YAW_TRUST  0.25f
 
 
 void torque_vectoring_update(const SensorData *sensors,
@@ -66,8 +82,40 @@ void torque_vectoring_update(const SensorData *sensors,
                            / TV_WHEELBASE_M;
     }
 
+    /* --- Step 1b: Fuse the IMU yaw rate with a wheel-speed estimate ---
+     *
+     * On a cornering car the outer wheels travel faster than the inner ones.
+     * The yaw rate follows directly from the left/right ground-speed split:
+     *
+     *   r_wheels = (v_right - v_left) / track
+     *
+     * where v = wheel_speed (rad/s) * wheel_radius.  We average the front and
+     * rear axle estimates, then blend with the IMU.  This corroborates the
+     * gyro (catching IMU bias/drift) but is down-weighted because it loses
+     * validity once a tyre slips or scrubs and no longer rolls cleanly. */
+    float v_fl = sensors->wheel_speed[WHEEL_FL] * TV_WHEEL_RADIUS_M;
+    float v_fr = sensors->wheel_speed[WHEEL_FR] * TV_WHEEL_RADIUS_M;
+    float v_rl = sensors->wheel_speed[WHEEL_RL] * TV_WHEEL_RADIUS_M;
+    float v_rr = sensors->wheel_speed[WHEEL_RR] * TV_WHEEL_RADIUS_M;
+
+    float r_front  = (v_fr - v_fl) / TV_TRACK_WIDTH_M;
+    float r_rear   = (v_rr - v_rl) / TV_TRACK_WIDTH_M;
+    float r_wheels = 0.5f * (r_front + r_rear);
+
+    float yaw_rate_est = (1.0f - TV_WHEEL_YAW_TRUST) * sensors->yaw_rate
+                         +        TV_WHEEL_YAW_TRUST  * r_wheels;
+
     /* --- Step 2: Yaw rate error --- */
-    float yaw_error = desired_yaw_rate - sensors->yaw_rate;
+    float yaw_error = desired_yaw_rate - yaw_rate_est;
+
+    /* Deadband: ignore yaw errors smaller than TV_YAW_DEADBAND.  The desired
+     * yaw rate is only an approximation (kinematic bicycle model) and the
+     * estimate carries sensor noise, so a small residual error is always
+     * present.  Reacting to it makes the bias chatter about zero; the deadband
+     * holds the differential at zero until there is a real error to correct. */
+    if (yaw_error >  TV_YAW_DEADBAND) yaw_error -= TV_YAW_DEADBAND;
+    else if (yaw_error < -TV_YAW_DEADBAND) yaw_error += TV_YAW_DEADBAND;
+    else yaw_error = 0.0f;
 
     /* --- Step 3: Torque bias (speed-dependent gain) ---
      *
@@ -91,8 +139,13 @@ void torque_vectoring_update(const SensorData *sensors,
     if (bias < -max_bias) bias = -max_bias;
 
     /* --- Step 4: Base torque per wheel (before bias) ---
-     * Split 50/50 front/rear, then divide each axle between two wheels. */
-    float base_per_wheel = driver_torque * 0.25f;  /* = total / 4 */
+     * driver_torque is the total MOTOR torque demand (Nm).  The four motor
+     * outputs (WheelTorques) are also motor torque -- the vehicle model applies
+     * the gear ratio itself when turning motor torque into wheel force.  So we
+     * just split the demand four ways here; we must NOT pre-multiply by the gear
+     * ratio (doing so double-counts it and saturates every wheel at the clamp,
+     * which is what made all four wheels read the same value). */
+    float base_per_wheel = driver_torque * 0.25f;
 
     /* --- Step 5: Apply left/right bias ---
      *
