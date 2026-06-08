@@ -184,6 +184,41 @@ static int find_nearest_segment(const Track *track, float px, float py,
 }
 
 
+/*
+ * Path curvature in the look-ahead region: the MAX Menger curvature over the
+ * waypoints roughly within `span` metres ahead of start_idx.  Uses the same
+ * multi-spacing stencil as the speed planner so a sharp apex three closely
+ * spaced points wide is not under-read.  Track-agnostic: it measures the
+ * geometry of whatever line is loaded, in 1/m.
+ */
+static float lookahead_curvature(const Track *track, int start_idx, float span)
+{
+    int   count = track->count;
+    float acc   = 0.0f;
+    float kmax  = 0.0f;
+    int   i;
+
+    for (i = 0; i < count; i++) {
+        int ccur = (start_idx + i) % count;
+        for (int d = 1; d <= 3; d++) {
+            int cprev = (start_idx + i - d + count) % count;
+            int cnext = (start_idx + i + d        ) % count;
+            float k = menger_curvature(
+                track->points[cprev].x, track->points[cprev].y,
+                track->points[ccur].x,  track->points[ccur].y,
+                track->points[cnext].x, track->points[cnext].y);
+            if (k > kmax) kmax = k;
+        }
+        int nxt = (start_idx + i + 1) % count;
+        float dx = track->points[nxt].x - track->points[ccur].x;
+        float dy = track->points[nxt].y - track->points[ccur].y;
+        acc += sqrtf(dx*dx + dy*dy);
+        if (acc > span) break;
+    }
+    return kmax;
+}
+
+
 /* ---- Pure Pursuit look-ahead point finder ---- */
 
 /*
@@ -256,7 +291,8 @@ float motion_control_update(VehicleState *state, const Track *track,
      * when the car slides wide and would otherwise make the planner skip a
      * corner).  Persists between ticks; the simulation drives one car.
      */
-    static int s_path_idx = -1;
+    static int   s_path_idx       = -1;
+    static float s_speed_integral = 0.0f;   /* throttle integral state, Nm (see header) */
 
     int   count = track->count;
     float vx    = state->velocity;
@@ -290,6 +326,34 @@ float motion_control_update(VehicleState *state, const Track *track,
     float Ld = K_LOOKAHEAD * vx;
     if (Ld < LOOKAHEAD_MIN_M) Ld = LOOKAHEAD_MIN_M;
     if (Ld > LOOKAHEAD_MAX_M) Ld = LOOKAHEAD_MAX_M;
+
+    /*
+     * Curvature-aware look-ahead floor: speed-adaptive Ld alone still chords
+     * across a SUSTAINED tight corner.  In a hairpin the car is slow, so Ld
+     * sits at the fixed floor LOOKAHEAD_MIN_M (2.8 m) — but on a ~2.5 m
+     * waypoint grid that floor still aims roughly one waypoint past the car,
+     * cutting the apex.  Pure Pursuit then computes the arc for a gentler curve
+     * than the real path, perpetually under-steers, and cross-track error
+     * integrates outward even at low speed (the wp83->85 wash-out).
+     *
+     * The fix ties the look-ahead floor to the corner RADIUS rather than a
+     * fixed distance: a tighter corner gets a proportionally shorter floor so
+     * the look-ahead point lands near the apex on the true radius.  Using
+     * Ld_min = K_LD_RADIUS / kappa = K_LD_RADIUS * R makes the chord subtend a
+     * fixed fraction of the turn regardless of corner size — the very property
+     * that makes it track-agnostic: a 3 m hairpin and a 30 m sweeper get
+     * geometrically similar (not absolutely equal) look-ahead, with no
+     * per-track tuning.  Clamped below by LOOKAHEAD_ABS_MIN so it can't collapse
+     * to zero on a near-hairpin, and it only ever LOWERS the floor (never raises
+     * Ld), so straights and fast corners are unchanged. */
+    {
+        float kappa_ahead = lookahead_curvature(track, i0, Ld);
+        if (kappa_ahead > 1e-4f) {
+            float ld_floor = K_LD_RADIUS / kappa_ahead;   /* = K_LD_RADIUS * R */
+            if (ld_floor < LOOKAHEAD_ABS_MIN) ld_floor = LOOKAHEAD_ABS_MIN;
+            if (ld_floor < LOOKAHEAD_MIN_M && Ld > ld_floor) Ld = ld_floor;
+        }
+    }
 
     float lx, ly;
     lookahead_point(track, i0, Ld, &lx, &ly);
@@ -355,8 +419,6 @@ float motion_control_update(VehicleState *state, const Track *track,
     float driver_torque;
 
     if (speed_error >= 0.0f) {
-        driver_torque = DRAG_FF_NM * vx + SPEED_KP_NM * speed_error;
-
         /* Traction circle: cut throttle in proportion to lateral grip already
          * in use, so the car only powers up as the corner opens (ay -> 0).
          * Use the roll-lagged ay_filt, not the raw same-tick ay: the latter
@@ -364,7 +426,6 @@ float motion_control_update(VehicleState *state, const Track *track,
         float lat_ratio = fabsf(state->ay_filt) / LAT_GRIP_REF_MS2;
         if (lat_ratio > 1.0f) lat_ratio = 1.0f;
         float grip_factor = sqrtf(1.0f - lat_ratio * lat_ratio);
-        driver_torque *= grip_factor;
 
         /* Steering-saturation cut: when the wheel is near full lock the front
          * tyres are already spending their whole grip budget turning, so any
@@ -372,16 +433,42 @@ float motion_control_update(VehicleState *state, const Track *track,
          * at full lock and accelerating" failure of the old controller).  Fade
          * throttle from full at STEER_SAT_FRAC of the limit to zero at the
          * limit. */
-        float steer_frac = fabsf(state->steering) / MAX_STEER_RAD;
+        float steer_factor = 1.0f;
+        float steer_frac   = fabsf(state->steering) / MAX_STEER_RAD;
         if (steer_frac > STEER_SAT_FRAC) {
             float over = (steer_frac - STEER_SAT_FRAC) / (1.0f - STEER_SAT_FRAC);
             if (over > 1.0f) over = 1.0f;
-            driver_torque *= (1.0f - over);
+            steer_factor = 1.0f - over;
         }
+
+        /* Integral anti-windup: only advance the integrator when the throttle is
+         * actually free to respond — i.e. neither cut is meaningfully active and
+         * the P-term alone is not already saturating the motor cap.  While a cut
+         * is active the car is grip-limited, not throttle-limited, so integrating
+         * the error then would just wind the term up through the corner. */
+        float p_term      = DRAG_FF_NM * vx + SPEED_KP_NM * speed_error;
+        int   cuts_active = (grip_factor < 0.99f) || (steer_factor < 0.99f);
+        if (!cuts_active && p_term < DRIVER_TORQUE_NM) {
+            s_speed_integral += SPEED_KI_NM * speed_error * MC_DT_S;
+            if (s_speed_integral >  SPEED_I_MAX_NM) s_speed_integral =  SPEED_I_MAX_NM;
+            if (s_speed_integral <  0.0f)           s_speed_integral =  0.0f;
+        }
+
+        driver_torque = p_term + s_speed_integral;
+
+        /* Apply both grip-limit cuts to the full demand (P + I): if the car is
+         * grip-limited the integral contribution must back off too. */
+        driver_torque *= grip_factor;
+        driver_torque *= steer_factor;
 
         if (driver_torque < 0.0f)             driver_torque = 0.0f;
         if (driver_torque > DRIVER_TORQUE_NM) driver_torque = DRIVER_TORQUE_NM;
     } else {
+        /* Braking is pure-P.  Reset the throttle integrator so a charge built up
+         * before the corner cannot carry across the braking phase and dump onto
+         * the next corner exit. */
+        s_speed_integral = 0.0f;
+
         driver_torque = BRAKE_KP_NM * speed_error;
         if (driver_torque < DRIVER_BRAKE_NM) driver_torque = DRIVER_BRAKE_NM;
         if (driver_torque > 0.0f)            driver_torque = 0.0f;

@@ -1,5 +1,5 @@
 /*
- * tests/eval_lap.c
+ * tests/tool_eval_lap.c
  *
  * Headless lap-evaluation harness (NOT a unit test — a diagnostic tool).
  *
@@ -17,7 +17,7 @@
  *
  * Build (from repo root):
  *   gcc -std=c11 -O2 -I HIL_Firmware/include -I shared -I ECU_Firmware/include \
- *       -o HIL_Firmware/build/eval_lap tests/eval_lap.c \
+ *       -o HIL_Firmware/build/eval_lap tests/tool_eval_lap.c \
  *       HIL_Firmware/src/motion_control.c HIL_Firmware/src/vehicle_model.c \
  *       HIL_Firmware/src/track.c HIL_Firmware/src/path_planning.c \
  *       ECU_Firmware/src/torque_vectoring.c -lm
@@ -153,9 +153,9 @@ int main(void)
         if (off_track(&track, state.x, state.y)) offtrack_ticks++;
 
         if (trace && (tick % 10 == 0))
-            printf("t=%5.2f wp=%3d kappa=%.3f cte=%.2f v=%4.1f steer=%+.3f beta=%+.3f\n",
-                   tick*DT, ni, kappa[ni], cte, state.velocity*3.6f,
-                   state.steering, state.slip_angle);
+            printf("t=%5.2f wp=%3d kappa=%.3f cte=%.2f v=%4.1f vtgt=%4.1f steer=%+.3f beta=%+.3f\n",
+                   tick*DT, ni, kappa[ni], cte, state.velocity,
+                   target_speed, state.steering, state.slip_angle);
 
         /* lap detection */
         float d0 = hypotf(state.x - track.points[0].x, state.y - track.points[0].y);

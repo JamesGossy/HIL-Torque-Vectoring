@@ -2,7 +2,7 @@
 #
 # tests/sweep.sh — parameter sweep over the motion-controller tuning gains.
 #
-# Recompiles the headless lap evaluator (tests/eval_lap.c) once per parameter
+# Recompiles the headless lap evaluator (tests/tool_eval_lap.c) once per parameter
 # combination, overriding the tuned defaults via -D, runs a 50 s evaluation, and
 # prints a table sorted by lap time among the configs that completed a CLEAN lap
 # (no cone contact).  The three gains below are the highest-leverage ones; edit
@@ -17,7 +17,7 @@ set -u
 cd "$(dirname "$0")/.."
 
 OUT=HIL_Firmware/build/eval_sweep
-SRCS="tests/eval_lap.c \
+SRCS="tests/tool_eval_lap.c \
   HIL_Firmware/src/motion_control.c HIL_Firmware/src/vehicle_model.c \
   HIL_Firmware/src/track.c HIL_Firmware/src/path_planning.c \
   ECU_Firmware/src/torque_vectoring.c"

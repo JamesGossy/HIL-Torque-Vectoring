@@ -22,7 +22,7 @@ This runs the full motion-control → ECU → vehicle loop over the FSG 2024 tra
 as fast as possible (no real-time sleep) and prints lap-tracking metrics. A good
 change keeps **off-track ticks at 0** and **a completed lap**, and should not
 regress mean/worst cross-track error or lap time. The source is
-`tests/eval_lap.c`; the machine-readable summary is the `RESULT ...` line.
+`tests/tool_eval_lap.c`; the machine-readable summary is the `RESULT ...` line.
 
 Keep evaluation runs at/under **50 s of simulated time** (one lap is ~32 s) —
 the evaluator already caps at 50 s. Longer runs waste time without adding

@@ -1,5 +1,5 @@
 /*
- * tests/perf_sim.c
+ * tests/tool_perf_sim.c
  *
  * Compute-speed benchmark for the HIL simulation (NOT a unit test).
  *
