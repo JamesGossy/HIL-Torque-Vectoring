@@ -150,7 +150,28 @@ int main(void)
         if (is_sharp && cte > worst_cte_sharp) worst_cte_sharp = cte;
         if (is_sharp && cte > 2.0f) sharp_violations++;
 
-        if (off_track(&track, state.x, state.y)) offtrack_ticks++;
+        if (off_track(&track, state.x, state.y)) {
+            offtrack_ticks++;
+#ifdef CLIP_DIAG
+            {
+                int bi = -1; float bd = 1e18f; const char *side = "?";
+                for (int z = 0; z < track.left_count; z++) {
+                    float ex = track.left_cones[z].x - state.x;
+                    float ey = track.left_cones[z].y - state.y;
+                    float d = ex*ex + ey*ey;
+                    if (d < bd) { bd = d; bi = z; side = "L"; }
+                }
+                for (int z = 0; z < track.right_count; z++) {
+                    float ex = track.right_cones[z].x - state.x;
+                    float ey = track.right_cones[z].y - state.y;
+                    float d = ex*ex + ey*ey;
+                    if (d < bd) { bd = d; bi = z; side = "R"; }
+                }
+                fprintf(stderr, "CLIP t=%.2f wp=%d cone=%s%d dist=%.2f v=%.1f kappa=%.3f\n",
+                        tick*DT, ni, side, bi, sqrtf(bd), state.velocity, kappa[ni]);
+            }
+#endif
+        }
 
         if (trace && (tick % 10 == 0))
             printf("t=%5.2f wp=%3d kappa=%.3f cte=%.2f v=%4.1f vtgt=%4.1f steer=%+.3f beta=%+.3f\n",

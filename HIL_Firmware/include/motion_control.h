@@ -89,7 +89,17 @@
 #define LOOKAHEAD_MAX_M   9.0f    /* maximum look-ahead, m (straights)        */
 #endif
 #ifndef K_CTE_PP
-#define K_CTE_PP          0.35f   /* cross-track restoring trim, rad/m        */
+#define K_CTE_PP          0.70f   /* cross-track restoring trim, rad/m
+                                   * — raised from 0.35 alongside the higher
+                                   *   corner-speed budget (MAX_LATERAL_ACCEL_MS2
+                                   *   3.0 -> 3.7).  At the faster corner speed a
+                                   *   weak pull let the car drift the last
+                                   *   ~0.25 m onto the apex cones it used to
+                                   *   clear; the stronger pull holds it on the
+                                   *   line (mean CTE 0.31 -> 0.19 m) so the
+                                   *   faster lap stays fully clean (0 off-track).
+                                   *   Pushed too hard (>0.8 at this speed) it
+                                   *   starts to oscillate, so 0.70 is the knee. */
 #endif
 /*
  * Curvature-aware look-ahead floor.  In a corner the look-ahead floor is set to
@@ -168,24 +178,30 @@
 #endif
 /*
  * MAX_LATERAL_ACCEL_MS2 is the corner-speed budget: v_corner = sqrt(a_lat/kappa).
- * The car's true peak is ~13 m/s^2.  This value was lowered from 7.0 to 4.0
- * after the per-wheel friction circle was added to the vehicle model: once the
- * tyres are honestly grip-limited, a 7.0 plan carried too much speed into the
- * corners and the car ran wide.  3.0 keeps the planned corner speed within what
- * the gripping tyres can hold while the Pure-Pursuit tracker corrects (it
- * minimised cone contact in the post-friction-circle sweep).
+ * The car's true peak is ~13 m/s^2, so the planner is still conservative — it
+ * deliberately leaves margin for the Pure-Pursuit tracker to correct rather than
+ * planning to the grip limit (a plan at the true peak over-shoots every corner).
+ *
+ * Raised from 3.0 to 3.7 once the cross-track pull (K_CTE_PP) was strengthened.
+ * A headless-eval sweep showed corner speed is the lap-time bottleneck on this
+ * track (the car already tracks its target speed ~98% of the lap), but raising
+ * a_lat alone clipped a few apex cones because the car drifted wide of the line.
+ * 3.7 with K_CTE_PP = 0.70 is the fastest setting that still runs a FULLY CLEAN
+ * lap (0 off-track ticks): lap 37.9 s -> 35.4 s, mean CTE 0.31 -> 0.19 m, worst
+ * 1.44 -> 1.08 m.  Pushing a_lat past ~3.7 starts grazing apex cones again no
+ * matter how hard the tracker pulls, because the min-curvature racing line
+ * itself hugs those apexes — going faster than this needs a feasibility-aware
+ * racing line (path planning), not more speed budget.
  *
  * NOTE: even at low corner speed the car cannot fully clean the single tightest
  * FSG hairpin (~3.2 m radius).  At full steering lock the front tyre is already
  * past its Pacejka grip peak (~12 deg slip), so it understeers there regardless
  * of speed — a genuine limit of THIS car's grip + steering geometry, not a
- * tuning error.  A feasibility-aware racing line (one that opens that apex to a
- * radius the car can actually hold) would be the proper fix; the current min-
- * curvature line leaves the car grazing that one apex.
+ * tuning error.
  *
  * Wrapped in #ifndef so the parameter sweep can override it (-DMAX_LATERAL_ACCEL_MS2=8.0f). */
 #ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2   3.0f   /* corner speed limit, m/s^2        */
+#define MAX_LATERAL_ACCEL_MS2   3.7f   /* corner speed limit, m/s^2        */
 #endif
 #define MAX_BRAKE_DECEL_MS2     6.0f   /* braking look-ahead decel, m/s^2  */
 #define SPEED_PLAN_HORIZON_M   80.0f   /* scan horizon for corners, metres */

@@ -282,11 +282,24 @@ steering snaps.
 
 This models late-braking into corners and full-throttle exits.
 
+The corner-speed budget `MAX_LATERAL_ACCEL_MS2` is the dominant lap-time lever
+on this corner-heavy track (the car already tracks its planned speed ~98% of the
+lap). It is set to 3.7 m/s² — conservative against the ~13 m/s² the tyres can
+really hold, leaving the tracker margin to correct. Raising it further only
+grazes the apex cones the min-curvature racing line already hugs; going faster
+than this would need a feasibility-aware racing line, not more speed budget.
+
 **Throttle/brake**
 
 A proportional speed controller with a traction-circle cut (throttle scales with
 `sqrt(1 - (ay / ay_ref)^2)`) backs off power mid-corner so the car does not
 power-understeer on exit.
+
+**Lap performance.** Against the headless evaluator (`make eval`) the tuned
+driver runs a fully clean lap (0 off-track ticks) in **35.4 s**, holding mean
+cross-track error to **0.19 m** (worst 1.08 m). The corner-speed budget and the
+cross-track pull (`K_CTE_PP`) are tuned together: raising the speed budget alone
+runs the car wide, so the pull is strengthened to keep it on the line.
 
 
 ## Things to try
@@ -312,10 +325,13 @@ FSG 2024 event and can be edited to create a custom layout. After changing them,
 `path_plan()` automatically rebuilds the racing line.
 
 **Change the driver**
-Open `HIL_Firmware/motion_control.h`. Change `TARGET_SPEED_MS` to make the car
-go faster or slower. Change `K_CTE` to make the Stanley tracker more or less
-aggressive. Change `MAX_LATERAL_ACCEL_MS2` to loosen or tighten the corner
-speed limits.
+Open `HIL_Firmware/motion_control.h`. Change `TARGET_SPEED_MS` to set the
+straight-line cruise speed. Change `K_CTE_PP` to make the Pure-Pursuit tracker
+pull back to the racing line more or less aggressively. Change
+`MAX_LATERAL_ACCEL_MS2` to loosen or tighten the corner-speed budget — the two
+interact, so after raising the speed budget you usually need more `K_CTE_PP` to
+keep the car on the line. Validate any change with `make eval` (a good change
+keeps off-track ticks at 0).
 
 
 ## What is not modelled
