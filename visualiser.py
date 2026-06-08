@@ -407,11 +407,13 @@ def draw_car(surface, state):
 
 
 def draw_torque_bars(surface, font, state, panel_x, panel_y):
-    # Full-scale per direction.  Drive and regen are asymmetric: motor drive
-    # peaks at ~29.4 Nm, regen reaches -100 Nm, so scale each half to its own
-    # limit (a single ±100 scale made every drive bar an invisible sliver).
-    DRIVE_MAX = 29.4
-    REGEN_MAX = 100.0
+    # Symmetric ±SCALE_NM scale: drive (up) and regen (down) share the same
+    # Nm-per-pixel, so a +15 Nm drive bar and a -15 Nm regen bar are the same
+    # length — the bars now read as honest, comparable magnitudes.  In normal
+    # driving the differential keeps torques within roughly -19..+29 Nm; the
+    # scale is set to the motor peak and any larger excursion is clamped to the
+    # bar height rather than overflowing.
+    SCALE_NM  = 29.4
     BAR_W     = 50
     HALF_H    = 32
     BAR_MAX_H = HALF_H * 2
@@ -431,10 +433,10 @@ def draw_torque_bars(surface, font, state, panel_x, panel_y):
         pygame.draw.rect(surface, MID_GREY, (bx, by, BAR_W, BAR_MAX_H))
 
         if torque > 0:
-            fill_h = int(HALF_H * min(torque, DRIVE_MAX) / DRIVE_MAX)
+            fill_h = int(HALF_H * min(torque, SCALE_NM) / SCALE_NM)
             pygame.draw.rect(surface, colour, (bx, zero_y - fill_h, BAR_W, fill_h))
         elif torque < 0:
-            fill_h = int(HALF_H * min(-torque, REGEN_MAX) / REGEN_MAX)
+            fill_h = int(HALF_H * min(-torque, SCALE_NM) / SCALE_NM)
             pygame.draw.rect(surface, REGEN_COL, (bx, zero_y, BAR_W, fill_h))
 
         pygame.draw.rect(surface, LIGHT_GREY, (bx, by, BAR_W, BAR_MAX_H), 1)
@@ -823,14 +825,14 @@ def draw_panel(surface, font_large, font, font_small,
     py = sep(py)
 
     # Torque bars
-    py = label("WHEEL TORQUES  (Nm, +29 / -100)", py)
+    py = label("WHEEL TORQUES  (Nm, +29 / -29)", py)
     py += 4
     draw_torque_bars(surface, font_small, state, px, py)
     py += (64 + 26 + 10) * 2 - 10 + 6
     py = sep(py)
 
     # Controls hint
-    s = font_small.render("T  toggle TV    [/]  Kp±5    Q  quit", True, MID_GREY)
+    s = font_small.render("T  toggle TV    [/]  Kp±5    M  view    F  fullscreen    Q  quit", True, MID_GREY)
     surface.blit(s, (px, py))
 
 
@@ -906,9 +908,27 @@ def main():
     t.start()
 
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+    # The window is freely resizable / movable and can go fullscreen.  All
+    # drawing is done at a FIXED logical resolution (WINDOW_W x WINDOW_H) onto an
+    # off-screen `canvas`, which is then scaled (preserving aspect ratio, with
+    # letterboxing) to fit whatever size the window currently is.  This keeps the
+    # whole panel layout intact at any window size without per-widget rescaling.
+    window = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
+    canvas = pygame.Surface((WINDOW_W, WINDOW_H))
+    screen = canvas                      # everything below draws to the canvas
+    win_w, win_h = WINDOW_W, WINDOW_H     # current actual window size
+    is_fullscreen = False
     pygame.display.set_caption("HIL Torque Vectoring")
     clock  = pygame.time.Clock()
+
+    def present():
+        """Scale the fixed-size canvas into the current window, letterboxed."""
+        scale = min(win_w / WINDOW_W, win_h / WINDOW_H)
+        dst_w, dst_h = max(1, int(WINDOW_W * scale)), max(1, int(WINDOW_H * scale))
+        scaled = pygame.transform.smoothscale(canvas, (dst_w, dst_h))
+        window.fill(BLACK)
+        window.blit(scaled, ((win_w - dst_w) // 2, (win_h - dst_h) // 2))
+        pygame.display.flip()
 
     font_large  = pygame.font.SysFont("consolas", 20, bold=True)
     font_medium = pygame.font.SysFont("consolas", 16)
@@ -953,7 +973,25 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
+            elif event.type == pygame.VIDEORESIZE:
+                # User dragged the window edge — remember the new size; the
+                # canvas is scaled to it in present().
+                if not is_fullscreen:
+                    win_w, win_h = max(1, event.w), max(1, event.h)
+                    window = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+
             elif event.type == pygame.KEYDOWN:
+                # F toggles fullscreen (desktop resolution); Esc/Q still quit.
+                if event.key == pygame.K_f:
+                    is_fullscreen = not is_fullscreen
+                    if is_fullscreen:
+                        window = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                        win_w, win_h = window.get_size()
+                    else:
+                        win_w, win_h = WINDOW_W, WINDOW_H
+                        window = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
+                    continue
+
                 # M toggles map / follow-cam view
                 if event.key == pygame.K_m:
                     view_mode = VIEW_MODE_FOLLOW if view_mode == VIEW_MODE_MAP else VIEW_MODE_MAP
@@ -1003,7 +1041,7 @@ def main():
                    actual_spd_hist, target_spd_hist)
 
         pygame.draw.rect(screen, MID_GREY, (VIEW_X, VIEW_Y, VIEW_W, VIEW_H), 1)
-        pygame.display.flip()
+        present()
 
     try:
         proc.stdin.write(b"q")

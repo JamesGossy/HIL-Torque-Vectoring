@@ -213,7 +213,7 @@
  * power-down.
  */
 #define DRIVER_TORQUE_NM   117.6f   /* max throttle motor torque, Nm (4 x 29.4 Nm) */
-#define SPEED_KP_NM          8.0f   /* throttle P-gain, Nm/(m/s).  Sized so a
+#define SPEED_KP_NM          800.0f /* throttle P-gain, Nm/(m/s).  Sized so a
                                       * typical corner-exit speed deficit
                                       * (~12 m/s below target) commands most of
                                       * the available motor torque, pushing the
@@ -247,10 +247,10 @@
  * higher Ki keeps shaving lap time but slowly raises mean cross-track error, so
  * 5 is the knee of that trade-off.  Wrapped in #ifndef so the sweep can override. */
 #ifndef SPEED_KI_NM
-#define SPEED_KI_NM          5.0f   /* throttle I-gain, Nm/(m/s·s)        */
+#define SPEED_KI_NM          400.0f /* throttle I-gain, Nm/(m/s·s)        */
 #endif
 #ifndef SPEED_I_MAX_NM
-#define SPEED_I_MAX_NM      25.0f   /* clamp on the integral contribution, Nm */
+#define SPEED_I_MAX_NM      250.0f  /* clamp on the integral contribution, Nm */
 #endif
 
 
