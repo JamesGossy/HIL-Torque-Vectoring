@@ -1,38 +1,38 @@
 # HIL Torque Vectoring
 
-A race car simulation with torque vectoring, written in C.
+A race-car torque-vectoring simulation, written in C.
 
-The simulation pretends to be a real race car and feeds sensor data to ECU code. The ECU code decides how to split drive torque between the four wheels. This lets you test and tune the ECU logic without a real car. That is what Hardware-in-the-Loop (HIL) testing means.
+The simulation pretends to be a real race car and feeds sensor data to ECU code.
+The ECU decides how to split drive torque between the four wheels. This lets you
+test and tune the ECU logic without a real car, which is what Hardware-in-the-Loop
+(HIL) testing means.
 
 When you run it, a pygame window opens showing the FSG 2024 cone track, the car
-moving around it in real time, and a live data panel on the right with speed,
-yaw rate, lap count, and a bar chart of the four wheel torques.
+driving round it in real time, and a live data panel with speed, yaw rate, lap
+count, and a bar chart of the four wheel torques.
 
 
 ## How to build and run
 
-You need two things:
-
-**1. Build the C simulation** (requires gcc and make — use MSYS2 on Windows):
+**1. Build the C simulation** (needs gcc and make; use MSYS2 on Windows):
 
 ```
-cd HIL-Torque-Vectoring
 make
 ```
 
 This produces `HIL_Firmware/build/hil_sim` (or `hil_sim.exe` on Windows).
 
-**2. Run the Python visualiser** (requires Python 3 and pygame):
+**2. Run the Python visualiser** (needs Python 3 and pygame):
 
 ```
 pip install pygame
 python visualiser.py
 ```
 
-`visualiser.py` launches `hil_sim` automatically and opens the window.
-You do not need to run `hil_sim` yourself.
+`visualiser.py` launches `hil_sim` itself and opens the window. You do not need
+to run `hil_sim` by hand.
 
-Controls (click the pygame window first so it captures keypresses):
+Controls (click the window first so it captures keypresses):
 
 | Key | Action |
 |-----|--------|
@@ -43,8 +43,8 @@ Controls (click the pygame window first so it captures keypresses):
 | F | Toggle fullscreen |
 | Q or Escape | Quit |
 
-The window is resizable and can be moved freely; drag any edge to resize or
-press F for fullscreen. The view scales to fit (letterboxed) at any size.
+The window is resizable and movable: drag an edge to resize, or press F for
+fullscreen. The view scales to fit at any size.
 
 
 ## Project layout
@@ -52,323 +52,239 @@ press F for fullscreen. The view scales to fit (letterboxed) at any size.
 ```
 HIL-Torque-Vectoring/
 |
-|-- visualiser.py             Python/pygame window. Launches hil_sim and draws it live.
-|-- shared/
-|   `-- tv_interface.h        The data types shared between the HIL and ECU sides.
-|                             In a real system these would cross a CAN bus.
+|-- Makefile                  Builds hil_sim, the tests, and the tools.
+|-- visualiser.py             Pygame window. Launches hil_sim and draws it live.
+|
+|-- shared/                   Shared by both the HIL and ECU sides.
+|   |-- tv_interface.h        The data types that cross the HIL/ECU boundary.
+|   |-- vehicle_config.h      The car's physical constants (mass, geometry, tyres).
+|   `-- parameters_config.h   Every tunable parameter (driver gains, TV gains).
 |
 |-- HIL_Firmware/             The simulation host. Pretends to be the real car.
-|   |-- main.c                The simulation loop. Prints state as CSV to stdout.
-|   |-- vehicle_model.c/.h    The physics of the car (position, speed, yaw rate).
-|   |-- track.c/.h            The FSG 2024 cone track defined as boundary cone positions.
-|   |-- path_planning.c/.h    Builds the racing-line waypoints from the cone data.
-|   |-- motion_control.c/.h   The virtual driver: Stanley steering + curvature speed planner.
-|   `-- Makefile              Builds everything into one binary called hil_sim.
+|   |-- src/main.c            The sim loop. Streams STATE lines to stdout.
+|   |-- src/vehicle_model.c   The car physics (per-wheel dynamic bicycle model).
+|   |-- src/track.c           The FSG 2024 cone track (measured cone positions).
+|   |-- src/path_planning.c   Builds the racing-line waypoints from the cones.
+|   `-- src/motion_control.c  The virtual driver: Pure Pursuit + speed planner.
 |
-|-- ECU_Firmware/             The ECU side. Only sees sensor data, not the full car state.
-|   |-- torque_vectoring.c    The TV algorithm: splits torque between the four wheels.
-|   `-- torque_vectoring.h    Function prototype and tuning constants.
+|-- ECU_Firmware/             The ECU side. Only sees sensor data.
+|   `-- src/torque_vectoring.c  The TV algorithm: splits torque four ways.
 |
-`-- ECU_Hardware/
-    `-- README.md             Placeholder for future PCB and wiring documentation.
+|-- tests/                    Unit tests (make test).
+|-- tools/                    Diagnostics: eval_lap, perf_sim, sweep.sh, CI helpers.
+`-- ECU_Hardware/             Placeholder for PCB and wiring docs.
 ```
 
-There are three roles in the system, kept in separate files on purpose:
+There are three roles, kept in separate files on purpose:
 
 | Role | File | What it does |
 |------|------|--------------|
-| Driver | `motion_control.c` | Stanley path tracking and curvature-based speed planning |
-| Car | `vehicle_model.c` | Updates the physics of the car each tick |
+| Driver | `motion_control.c` | Pure Pursuit path tracking and curvature speed planning |
+| Car | `vehicle_model.c` | Updates the car physics each tick |
 | ECU | `torque_vectoring.c` | Splits the throttle demand into four wheel torques |
+
+The ECU only ever receives a `SensorData` struct. It never touches the full
+vehicle state. That is the HIL boundary. The `make` build checks it by compiling
+`torque_vectoring.c` with only `shared/` and its own header on the include path,
+so the ECU cannot accidentally depend on anything in `HIL_Firmware/`.
+
+
+## Tuning parameters
+
+Every value you would tune lives in `shared/parameters_config.h`: the driver
+gains (look-ahead, cross-track pull, speed budget, throttle/brake), the cone
+safety net, and the torque-vectoring gains. The car's physical constants (mass,
+geometry, tyre coefficients) are separate, in `shared/vehicle_config.h`, because
+they describe the hardware rather than a tuning choice.
+
+The highest-leverage gains are wrapped in `#ifndef`, so the sweep tool can
+override them at compile time with `-Dname=value` without editing the file.
 
 
 ## How it works
 
-Each tick (100 times per second), this happens:
+Each tick (100 times a second):
 
 ```
-Motion control (driver)
-    projects car onto nearest racing-line segment (Stanley)
-    sets steering angle
-    plans target speed from upcoming curvature (two-pass backward sweep)
-    returns driver torque demand (total Nm)
+motion_control (driver)
+    projects the car onto the racing line, sets the steering angle
+    plans a target speed from the upcoming curvature
+    returns a driver torque demand (total Nm)
         |
         v
-ECU Firmware (torque_vectoring_update)
-    receives sensor data: yaw rate, speed, steering angle, wheel speeds
-    fuses IMU yaw rate with wheel-speed estimate
-    computes four wheel torques
+torque_vectoring (ECU)
+    receives sensor data: yaw rate, speed, steering, wheel speeds
+    splits the demand into four wheel torques
         |
         v
-Vehicle Model (vehicle_model_update)
-    applies wheel torques and steering to update:
-    position (x, y), heading, speed, yaw rate
+vehicle_model (car)
+    applies the torques and steering, updates position, heading, speed, yaw
         |
         v
-Track (track_update)
-    checks if car has reached the next waypoint
-    advances to the next one, counts laps
+track
+    advances the waypoint index and counts laps
         |
         v
-hil_sim prints a STATE line to stdout (every 5 ticks = 20 Hz)
-    x, y, heading, speed, yaw_rate, four wheel torques, TV state, lap, time, ...
-        |
-        v  (stdout pipe)
-visualiser.py reads the STATE line
-    draws the track, cones, car, and data panel in the pygame window
+hil_sim prints a STATE line (20 Hz) which the visualiser reads and draws
 ```
-
-The ECU code only ever receives a `SensorData` struct. It never touches the full
-`VehicleState`. That is the HIL boundary. In a real system, the real ECU would
-receive real sensor readings over CAN, and the HIL PC would receive real torque
-commands back. The code structure already reflects this.
 
 
 ## The track
 
-The track is the FSG 2024 Formula Student Germany endurance layout, defined by
-228 measured cone positions (117 left/blue, 111 right/yellow-orange).
+The FSG 2024 Formula Student Germany endurance layout, defined by 228 measured
+boundary cones (117 left, 111 right). At startup `path_plan()` builds the racing
+line in three stages:
 
-At startup, `path_plan()` builds the racing-line waypoints from the raw cone data
-in three stages:
-
-1. **Gate extraction** — each left cone is paired with its nearest right cone to
-   form a gate. Gates wider than 10 m are rejected.
-
-2. **Centreline resampling** — gate midpoints are resampled to uniform 2.5 m
-   spacing so the optimiser sees evenly spaced control points.
-
-3. **Minimum-curvature racing line** — each uniformly spaced point carries a
-   lateral offset along the track normal. A Gauss-Seidel sweep of the
-   `[1, -4, 6, -4, 1]` bending-energy stencil minimises total curvature (wider
-   arcs through corners = higher speed limit) while keeping the line inside the
-   cone corridor.
+1. **Gate extraction**: pair each left cone with its nearest right cone.
+2. **Centreline resampling**: resample the gate midpoints to uniform 2.5 m spacing.
+3. **Minimum-curvature line**: sweep a bending-energy stencil to find the
+   lowest-curvature line inside the cone corridor. Wider arcs through corners
+   mean a higher corner-speed limit.
 
 
 ## The vehicle model
 
-The car uses a single-track bicycle model with a Pacejka lateral tyre model.
+A 3-DOF planar model (vx, vy, yaw) evaluated per wheel:
 
-It tracks: position (x, y), heading angle, speed, yaw rate, body slip angle,
-lateral velocity, and longitudinal/lateral accelerations. Load transfer is
-modelled with a first-order lag (~80 ms) to avoid algebraic feedback loops.
+- Per-wheel Pacejka lateral tyre forces (load-sensitive and nonlinear).
+- Quadratic aerodynamic downforce and drag.
+- Longitudinal and lateral load transfer giving individual wheel loads, with a
+  first-order lag so the transfer does not form an algebraic feedback loop.
+- A per-wheel friction circle, so a wheel cannot put down more combined
+  longitudinal and lateral force than its grip allows.
+- Ackermann per-wheel steering and per-wheel drive force from motor torque,
+  which is what makes torque vectoring possible.
 
-Parameters match the M25 Formula Student car (260 kg, 1.55 m wheelbase,
-1.30 m track width, four 29.4 Nm peak motors with a 15.47:1 gear ratio).
+Parameters match the M25 Formula Student car (260 kg, 1.55 m wheelbase, 1.30 m
+track, four 29.4 Nm motors through a 15.47:1 gear).
 
 
 ## The torque vectoring algorithm
 
-The algorithm lives entirely in `ECU_Firmware/torque_vectoring.c`. Here is what it does.
+It lives entirely in `ECU_Firmware/src/torque_vectoring.c`. It is a model-based
+yaw-moment controller: it shifts torque from the inner to the outer wheels of
+each axle so the car rotates at the rate the steering is asking for, no more
+(oversteer) and no less (understeer).
 
-When a car goes around a corner, the outside wheels travel a longer arc than
-the inside wheels. If all four wheels get the same torque, the car tends to
-push wide (understeer). Giving more torque to the outside wheels helps the car
-rotate into the corner.
-
-The algorithm is a model-based yaw-moment controller: **feedforward + PID
-feedback on yaw rate**, with a grip-aware, rear-biased torque split.
-
-**Step 1: Desired yaw rate (understeer-aware)**
-
-At any given speed and steering angle, there is a yaw rate the car should have
-if it is following the intended path. The steady-state single-track model bends
-the kinematic estimate down with a `v²` understeer term so the reference tracks
-the *achievable* yaw rate rather than the (unreachable) zero-slip one:
+**Step 1: Desired yaw rate.** A `v^2` understeer term bends the kinematic
+estimate down to the yaw rate the car can actually reach:
 
 ```
-desired_yaw_rate = speed * tan(steering_angle) / (wheelbase + K_us * speed²)
+desired_yaw_rate = speed * tan(steering) / (wheelbase + K_us * speed^2)
 ```
 
-**Step 1b: Fuse IMU with wheel-speed estimate**
+**Step 1b: Fuse the IMU with a wheel-speed estimate.** The outer wheels spin
+faster than the inner ones, so `r_wheels = (v_right - v_left) / track`. The final
+estimate blends the IMU (primary) with this wheel-speed channel.
 
-The outer wheels spin faster than the inner wheels, so `r_wheels =
-(v_right - v_left) / track_width`. The final estimate blends the IMU (primary)
-with the wheel-speed channel (25% weight) to corroborate the gyro while staying
-robust under tyre slip.
+**Step 2: Yaw error**, with a deadband so the bias does not chatter on noise.
 
-**Step 2: Yaw rate error**
+**Step 3: Feedforward.** Pre-loads the differential from the cornering demand the
+instant the steering moves, so the yaw moment is there before any error develops.
+This is the biggest contributor to good corner tracking.
 
-```
-error = desired_yaw_rate - fused_yaw_rate
-```
-
-A deadband of ±0.03 rad/s suppresses chatter from sensor noise and the
-steady-state bias of the desired-yaw estimate.
-
-**Step 3: Feedforward**
-
-A pure feedback controller only acts once an error has opened up, so it is
-always a step behind the corner. The feedforward term pre-loads the
-differential straight from the cornering *demand* (known the instant the
-steering moves), so the yaw moment is already there as the car turns in:
+**Step 4: PID feedback** (with anti-windup):
 
 ```
-feedforward = K_ff * desired_yaw_rate * speed
-```
-
-This is the single biggest contributor to the improvement — it cut off-track
-ticks and worst-case cross-track error roughly in half on its own.
-
-**Step 4: PID feedback (with anti-windup)**
-
-```
-effective_Kp = Kp * (12 m/s / speed)    [capped at 3× Kp near standstill]
-P = effective_Kp * error
-I = Ki * ∫error dt                       [erases standing understeer]
-D = Kd * d(error)/dt                     [damps the turn-in transient]
+P = effective_Kp * error      [Kp scales inversely with speed]
+I = Ki * integral(error)      [erases the standing understeer]
+D = Kd * d(error)/dt          [damps the turn-in]
 bias = feedforward + P + I + D
 ```
 
-`Kp` starts at 60 Nm per rad/s and can be changed at runtime with `[` and `]`;
-`Ki` and `Kd` are expressed as fractions of `Kp` so the loop scales together.
-The integrator is **frozen whenever the bias saturates** (and rolled back if a
-motor physically runs out of envelope), so it cannot wind up against the clamp.
+`Kp` defaults to 60 and is tunable at runtime with `[` and `]`. `Ki` and `Kd` are
+fractions of it. The integrator freezes when the bias saturates, so it cannot
+wind up.
 
-**Step 5: Grip-aware, rear-biased split**
+**Step 5: Rear-biased split.** The driver torque is split evenly across the four
+motors. The yaw-moment differential is then split front/rear with the larger
+share to the rear (the rear tyres spend less grip on steering, so they have more
+to give the differential).
 
-The total driver torque is split equally across all four motors. The yaw-moment
-differential is then split front/rear with the larger share to the rear axle
-(`TV_REAR_SHARE`, default 0.6) — in a corner the rear tyres spend less of their
-grip budget on steering, leaving more longitudinal headroom for the
-differential. Within each axle the bias shifts torque to the outer wheels:
-
-```
-outer_wheel = (total / 4) + (axle_bias / 2)
-inner_wheel = (total / 4) - (axle_bias / 2)
-```
-
-**Step 6: Differential-preserving clamp**
-
-Each wheel torque is clamped to the motor limits (−100 Nm regen to +29.4 Nm
-drive). A naive per-wheel clamp would silently destroy the yaw moment when the
-outer wheel saturates; instead the clipped amount is pushed onto the inner wheel
-(into regen if needed), so the commanded differential — and the yaw moment — is
-held as far as the motor envelope allows.
-
-The controller keeps a small amount of internal state (the integrator and the
-previous error) for its PID terms. This is safe because the HIL host calls it
-exactly once per fixed-rate control tick. `torque_vectoring_reset()` clears that
-state for a clean start or for test isolation.
-
-The four highest-leverage TV gains (`TV_KFF`, `TV_KI_FRAC`, `TV_KD_FRAC`,
-`TV_REAR_SHARE`) are wrapped in `#ifndef`, so they can be swept at compile time
-with `-D` without editing the source.
-
-Measured against the headless lap evaluator (`make eval`), the overhaul improved
-every metric over the previous pure-P controller: off-track ticks 43 → 0,
-worst cross-track error 2.44 m → 1.44 m, mean cross-track error 0.50 m → 0.31 m,
-sharp-corner violations 21 → 0, lap time 38.50 s → 37.90 s.
+**Step 6: Differential-preserving clamp.** Each wheel torque is clamped to the
+motor limits (+29.4 Nm drive to -100 Nm regen). When the outer wheel saturates,
+the clipped amount is pushed onto the inner wheel so the commanded differential,
+and the yaw moment, is held as far as the motors allow.
 
 
 ## The motion controller (virtual driver)
 
-**Steering — Stanley controller**
+**Steering: Pure Pursuit.** It aims at a point on the racing line a look-ahead
+distance ahead of the rear axle and computes the single-arc steer angle that
+drives the rear axle through it. A short look-ahead at low speed commits the car
+to a tight apex; a longer one at speed keeps the line smooth. A small cross-track
+trim pulls the car back when it drifts off the line, and a cone repulsion term is
+a safety net near the boundary.
 
-The front axle is projected onto the nearest racing-line segment each tick.
-The commanded steering angle combines:
-- A curvature feedforward term (pre-aligns the wheel with the corner)
-- Heading error (aligns the car with the path tangent)
-- Cross-track error term `atan(K_CTE * cte / (v + K_soft))` (pulls back to centreline)
-- A gentle cone-repulsion safety net
+**Speed: two-pass planner.** A forward pass caps each waypoint's speed from its
+curvature (`v = sqrt(a_lat / kappa)`), then a backward pass propagates braking
+back from the furthest waypoint. This models late braking into corners and full
+power out of them.
 
-A slew-rate limit (4 rad/s road-wheel) prevents unrealistic instantaneous
-steering snaps.
+**Throttle/brake.** A proportional-plus-integral speed controller with a
+traction-circle cut (throttle scales with `sqrt(1 - (ay/ay_ref)^2)`) backs off
+power mid-corner, and a steering-saturation cut fades throttle near full lock so
+the car does not power wide.
 
-**Speed — two-pass backward-sweep planner**
 
-1. Forward pass: for each waypoint within 80 m, compute `v_limit = sqrt(a_lat / kappa)`.
-2. Backward pass: propagate braking from the furthest waypoint back: `v[i] = min(v_limit[i], sqrt(v[i+1]^2 + 2*a_brake*ds))`.
+## Evaluating changes
 
-This models late-braking into corners and full-throttle exits.
+Judge any driver, vehicle, or controller change with the headless lap evaluator,
+not by eye and not by the unit tests alone:
 
-The corner-speed budget `MAX_LATERAL_ACCEL_MS2` is the dominant lap-time lever
-on this corner-heavy track (the car already tracks its planned speed ~98% of the
-lap). It is set to 3.7 m/s² — conservative against the ~13 m/s² the tyres can
-really hold, leaving the tracker margin to correct. Raising it further only
-grazes the apex cones the min-curvature racing line already hugs; going faster
-than this would need a feasibility-aware racing line, not more speed budget.
+```
+make eval
+```
 
-**Throttle/brake**
+It runs the full motion-control to ECU to vehicle loop over the FSG track as fast
+as possible and prints lap-tracking metrics, ending in a machine-readable
+`RESULT` line. A good change keeps **off-track ticks at 0** and **completes a
+lap**, and should not regress mean or worst cross-track error or lap time.
 
-A proportional speed controller with a traction-circle cut (throttle scales with
-`sqrt(1 - (ay / ay_ref)^2)`) backs off power mid-corner so the car does not
-power-understeer on exit.
-
-**Lap performance.** Against the headless evaluator (`make eval`) the tuned
-driver runs a fully clean lap (0 off-track ticks) in **35.4 s**, holding mean
-cross-track error to **0.19 m** (worst 1.08 m). The corner-speed budget and the
-cross-track pull (`K_CTE_PP`) are tuned together: raising the speed budget alone
-runs the car wide, so the pull is strengthened to keep it on the line.
+`tools/sweep.sh` sweeps the highest-leverage gains and prints a table sorted by
+clean-lap time. Only accept a config with 0 off-track ticks.
 
 
 ## Things to try
 
-**Toggle TV on and off**
-Press `T` while the simulation is running. Watch the torque bar chart on the right.
-With TV off, all four wheels get the same torque. With TV on, the outer wheels get
-more torque through corners.
+**Toggle TV on and off** with `T`, and watch the torque bars. With TV off all
+four wheels get the same torque; with TV on the outer wheels get more through
+corners.
 
-**Change the gain**
-Press `[` to decrease Kp or `]` to increase it. A very high gain (try 200+)
-makes the TV system very aggressive. A gain of 0 is the same as TV off.
+**Change the gain** with `[` and `]`. A very high gain makes TV aggressive; a
+gain of 0 is the same as TV off.
 
-**Read the code**
-The torque vectoring algorithm is a well-commented feedforward + PID yaw-moment
-controller; every step is explained inline. The vehicle model is the next place
-to read. Start with
-`ECU_Firmware/torque_vectoring.c` then move to `HIL_Firmware/vehicle_model.c`.
+**Change the driver.** Edit `shared/parameters_config.h`. `TARGET_SPEED_MS` sets
+the straight-line cruise speed, `K_CTE_PP` sets how hard the tracker pulls back
+to the line, and `MAX_LATERAL_ACCEL_MS2` sets the corner-speed budget. The speed
+budget and the cross-track pull interact, so after raising the budget you usually
+need more pull to stay clean. Validate with `make eval`.
 
-**Change the track**
-Open `HIL_Firmware/track.c`. The cone positions are measured data from the real
-FSG 2024 event and can be edited to create a custom layout. After changing them,
-`path_plan()` automatically rebuilds the racing line.
-
-**Change the driver**
-Open `HIL_Firmware/motion_control.h`. Change `TARGET_SPEED_MS` to set the
-straight-line cruise speed. Change `K_CTE_PP` to make the Pure-Pursuit tracker
-pull back to the racing line more or less aggressively. Change
-`MAX_LATERAL_ACCEL_MS2` to loosen or tighten the corner-speed budget — the two
-interact, so after raising the speed budget you usually need more `K_CTE_PP` to
-keep the car on the line. Validate any change with `make eval` (a good change
-keeps off-track ticks at 0).
+**Change the track.** Edit the cone positions in `HIL_Firmware/src/track.c`.
+`path_plan()` rebuilds the racing line automatically.
 
 
 ## What is not modelled
 
-This simulation leaves out a lot of things on purpose. The goal is to be
-readable, not to be a racing simulator.
-
-Not modelled:
-- Weight transfer under braking and acceleration (load transfer lag is modelled but not full weight transfer)
-- Aerodynamic drag and downforce
-- Brake torque vectoring (only drive torque is vectored here)
-- Suspension travel and body roll
-- Motor and inverter dynamics
-- Battery state of charge
-
-Do not use this to predict real lap times or vehicle limits. Use it to understand
-how torque vectoring control logic works, and to test that the ECU code behaves
-correctly in response to sensor inputs.
+This sim leaves things out on purpose, to stay readable rather than be a full
+racing simulator. Not modelled: suspension travel and body roll, motor and
+inverter dynamics, battery state, and brake torque vectoring (only drive torque
+is vectored). Use it to understand how the control logic works and to test that
+the ECU behaves correctly, not to predict real lap times.
 
 
 ## Platform notes
 
-**Python visualiser:** Requires Python 3 and pygame. Install with:
-```
-pip install -r requirements.txt
-```
+**Visualiser:** needs Python 3 and pygame (`pip install pygame`).
 
-**Building hil_sim on Linux / macOS:** Works out of the box with any gcc installation.
+**Building on Linux / macOS:** works with any gcc.
 
-**Building hil_sim on Windows:** Use MSYS2 with the MinGW-w64 toolchain.
-
-Install MSYS2 from https://www.msys2.org, then in the MSYS2 shell:
+**Building on Windows:** use MSYS2 with the MinGW-w64 toolchain. Install MSYS2
+from https://www.msys2.org, then in the MSYS2 shell:
 
 ```
 pacman -S mingw-w64-x86_64-gcc make
 ```
 
-Then open the MinGW 64-bit shell, navigate to the repo, and run `make`.
-You can then run `python visualiser.py` from a normal Windows terminal (cmd,
-PowerShell, or the MSYS2 shell — all work as long as Python is on your PATH).
+Open the MinGW 64-bit shell, go to the repo, and run `make`. You can then run
+`python visualiser.py` from any terminal that has Python on its PATH.

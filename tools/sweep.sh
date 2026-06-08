@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# tests/sweep.sh — parameter sweep over the motion-controller tuning gains.
+# tools/sweep.sh - parameter sweep over the motion-controller tuning gains.
 #
-# Recompiles the headless lap evaluator (tests/tool_eval_lap.c) once per parameter
+# Recompiles the headless lap evaluator (tools/eval_lap.c) once per parameter
 # combination, overriding the tuned defaults via -D, runs a 50 s evaluation, and
 # prints a table sorted by lap time among the configs that completed a CLEAN lap
 # (no cone contact).  The three gains below are the highest-leverage ones; edit
 # the value lists to widen or narrow the search.
 #
 # Usage (from repo root):
-#   bash tests/sweep.sh
+#   bash tools/sweep.sh
 #
 # Requires gcc + the same source files as `make`.
 
@@ -17,7 +17,7 @@ set -u
 cd "$(dirname "$0")/.."
 
 OUT=HIL_Firmware/build/eval_sweep
-SRCS="tests/tool_eval_lap.c \
+SRCS="tools/eval_lap.c \
   HIL_Firmware/src/motion_control.c HIL_Firmware/src/vehicle_model.c \
   HIL_Firmware/src/track.c HIL_Firmware/src/path_planning.c \
   ECU_Firmware/src/torque_vectoring.c"
@@ -25,9 +25,9 @@ INC="-I HIL_Firmware/include -I shared -I ECU_Firmware/include"
 
 # Sweep grids (the tuned defaults sit inside each list).  Keep values written
 # with a decimal point so the 'f' suffix lands on a float constant, not an int.
-ALAT_LIST="5.0 7.0 9.0 11.0"     # MAX_LATERAL_ACCEL_MS2 — corner speed budget
-KLA_LIST="0.35 0.45 0.55"        # K_LOOKAHEAD           — look-ahead time, s
-LMIN_LIST="1.8 2.2 2.8"          # LOOKAHEAD_MIN_M       — min look-ahead, m
+ALAT_LIST="5.0 7.0 9.0 11.0"     # MAX_LATERAL_ACCEL_MS2 - corner speed budget
+KLA_LIST="0.35 0.45 0.55"        # K_LOOKAHEAD           - look-ahead time, s
+LMIN_LIST="1.8 2.2 2.8"          # LOOKAHEAD_MIN_M       - min look-ahead, m
 
 mkdir -p HIL_Firmware/build
 printf "%-6s %-5s %-5s | %-8s %-9s %-8s %-5s %s\n" \

@@ -1,24 +1,10 @@
 /*
- * tests/tool_perf_sim.c
+ * tools/perf_sim.c
  *
- * Compute-speed benchmark for the HIL simulation (NOT a unit test).
- *
- * Runs the exact same per-tick loop as main.c (motion control -> ECU ->
- * vehicle model -> track) with NO real-time sleep, for a fixed amount of
- * WALL-CLOCK time (default 1.0 s), and reports how much simulation it managed
- * to compute in that time:
- *
- *   - ticks computed         (one tick = DT = 10 ms of simulated time)
- *   - simulated seconds       (ticks * DT)
- *   - real-time factor        (simulated seconds / wall seconds — how many
- *                              times faster than real time the sim runs)
- *   - laps completed          (full laps of the FSG track)
- *   - laps per wall-second    (the number the user asked for)
- *
- * This measures raw compute throughput on the host machine; it does not judge
- * driving quality (use `make eval` for that).
- *
- * Build (from repo root):  make perf
+ * Compute-speed benchmark (not a unit test). Runs the main.c tick loop with no
+ * real-time sleep for a fixed wall-clock time (default 1 s) and reports
+ * throughput: ticks computed, real-time factor, and laps per wall-second. It
+ * measures host compute speed, not driving quality. Build it with `make perf`.
  */
 
 #include <stdio.h>

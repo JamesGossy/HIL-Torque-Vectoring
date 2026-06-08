@@ -1,9 +1,8 @@
 #include "../include/track.h"
 #include "../include/path_planning.h"
-#include <float.h>
 
 /*
- * track.c — FSG 2024 endurance track
+ * track.c - FSG 2024 endurance track
  *
  * Track boundaries are defined by the positions of the left (blue) and right
  * (yellow/orange) cones as measured at the real event.
@@ -164,40 +163,4 @@ void track_update(Track *track, float car_x, float car_y)
             break;
         }
     }
-}
-
-
-TrackPoint track_get_target(const Track *track)
-{
-    return track->points[track->current_index];
-}
-
-
-void track_get_bounds(const Track *track,
-                      float *min_x, float *max_x,
-                      float *min_y, float *max_y)
-{
-    int i;
-    *min_x =  FLT_MAX;
-    *max_x = -FLT_MAX;
-    *min_y =  FLT_MAX;
-    *max_y = -FLT_MAX;
-
-    for (i = 0; i < track->left_count; i++) {
-        if (track->left_cones[i].x < *min_x) *min_x = track->left_cones[i].x;
-        if (track->left_cones[i].x > *max_x) *max_x = track->left_cones[i].x;
-        if (track->left_cones[i].y < *min_y) *min_y = track->left_cones[i].y;
-        if (track->left_cones[i].y > *max_y) *max_y = track->left_cones[i].y;
-    }
-    for (i = 0; i < track->right_count; i++) {
-        if (track->right_cones[i].x < *min_x) *min_x = track->right_cones[i].x;
-        if (track->right_cones[i].x > *max_x) *max_x = track->right_cones[i].x;
-        if (track->right_cones[i].y < *min_y) *min_y = track->right_cones[i].y;
-        if (track->right_cones[i].y > *max_y) *max_y = track->right_cones[i].y;
-    }
-
-    *min_x -= 8.0f;
-    *max_x += 8.0f;
-    *min_y -= 8.0f;
-    *max_y += 8.0f;
 }

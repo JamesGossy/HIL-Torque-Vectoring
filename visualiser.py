@@ -60,8 +60,8 @@ HEADING_COL  = (255, 200,  50)
 TV_ON_COL    = (80,  220,  80)
 TV_OFF_COL   = (220,  80,  80)
 
-TRAJ_ON_COL  = ( 60, 200,  60)   # dark green  — trajectory with TV on
-TRAJ_OFF_COL = (200, 160,  40)   # amber       — trajectory with TV off
+TRAJ_ON_COL  = ( 60, 200,  60)   # dark green  - trajectory with TV on
+TRAJ_OFF_COL = (200, 160,  40)   # amber       - trajectory with TV off
 
 FL_COL    = (100, 180, 255)
 FR_COL    = (100, 220, 150)
@@ -79,8 +79,8 @@ SLIP_GREEN  = ( 80, 220,  80)
 SLIP_YELLOW = (220, 200,  50)
 SLIP_RED    = (220,  80,  80)
 
-US_COL   = (255, 160,  40)   # orange — understeer
-OS_COL   = (220,  60,  60)   # red    — oversteer
+US_COL   = (255, 160,  40)   # orange - understeer
+OS_COL   = (220,  60,  60)   # red    - oversteer
 
 LAP_TV_ON_COL  = ( 80, 220,  80)
 LAP_TV_OFF_COL = (220, 200,  50)
@@ -102,7 +102,7 @@ CONE_YELLOW      = (255, 210,   0)
 CONE_YELLOW_EDGE = (255, 240, 120)
 CONE_ORANGE      = (255, 120,   0)
 
-RACING_LINE_COL  = (  0, 210, 255)   # cyan — optimal racing line
+RACING_LINE_COL  = (  0, 210, 255)   # cyan - optimal racing line
 
 
 # ---- View modes ----
@@ -126,12 +126,12 @@ _SCALE     = 1.0
 _OFF_X     = 0.0
 _OFF_Y     = 0.0
 
-# Saved map transform — restored after each follow-cam frame
+# Saved map transform - restored after each follow-cam frame
 _MAP_SCALE = 1.0
 _MAP_OFF_X = 0.0
 _MAP_OFF_Y = 0.0
 
-# Cached track screen coords — computed once in set_track_bounds(), used every frame.
+# Cached track screen coords - computed once in set_track_bounds(), used every frame.
 _TRACK_SCREEN_PTS = []
 
 # World-space cone positions (kept for follow-cam reprojection each frame)
@@ -339,7 +339,7 @@ def draw_track(surface):
         pygame.draw.lines(surface, (70, 70, 70), True, left,  1)
         pygame.draw.lines(surface, (70, 70, 70), True, right, 1)
 
-    # Cone radius in pixels — fixed 4px min so they're always visible on map,
+    # Cone radius in pixels - fixed 4px min so they're always visible on map,
     # larger in follow-cam where the scale is higher
     r = max(4, world_len_to_pixels(0.18))
 
@@ -409,7 +409,7 @@ def draw_car(surface, state):
 def draw_torque_bars(surface, font, state, panel_x, panel_y):
     # Symmetric ±SCALE_NM scale: drive (up) and regen (down) share the same
     # Nm-per-pixel, so a +15 Nm drive bar and a -15 Nm regen bar are the same
-    # length — the bars now read as honest, comparable magnitudes.  In normal
+    # length - the bars now read as honest, comparable magnitudes.  In normal
     # driving the differential keeps torques within roughly -19..+29 Nm; the
     # scale is set to the motor peak and any larger excursion is clamped to the
     # bar height rather than overflowing.
@@ -974,7 +974,7 @@ def main():
                 running = False
 
             elif event.type == pygame.VIDEORESIZE:
-                # User dragged the window edge — remember the new size; the
+                # User dragged the window edge - remember the new size; the
                 # canvas is scaled to it in present().
                 if not is_fullscreen:
                     win_w, win_h = max(1, event.w), max(1, event.h)

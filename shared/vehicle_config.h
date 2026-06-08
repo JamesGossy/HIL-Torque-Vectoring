@@ -2,7 +2,7 @@
 #define VEHICLE_CONFIG_H
 
 /* =========================================================================
- * shared/vehicle_config.h  —  M25 vehicle parameters
+ * shared/vehicle_config.h  -  M25 vehicle parameters
  *
  * Single source of truth for all vehicle constants used by both the HIL
  * simulation and the ECU firmware.  Edit this file to tune the model.
@@ -29,7 +29,7 @@
  * first-order lag (time constant LOAD_TRANSFER_TAU_S) on the acceleration that
  * drives the load-transfer terms.  Without this lag the transfer is computed
  * algebraically from the same-tick acceleration it helps produce, forming an
- * undamped feedback loop that rings at the sim step rate — seen as violently
+ * undamped feedback loop that rings at the sim step rate - seen as violently
  * jittery yaw rate and wheel torques.  ~80 ms is a representative roll-response
  * time for a stiff race car. */
 #define LOAD_TRANSFER_TAU_S  0.08f
@@ -47,10 +47,10 @@
  *
  * Fy = D * Fz * sin( C * atan( B*α − E*(B*α − atan(B*α)) ) )
  *
- *   B  — stiffness factor  (slope at zero slip; higher = sharper build-up)
- *   C  — shape factor      (controls peak width; negative here for sign convention)
- *   D  — peak factor       (peak Fy / Fz; ~= peak friction coefficient)
- *   E  — curvature factor  (shifts the slip angle at peak; 0 = symmetric)
+ *   B  - stiffness factor  (slope at zero slip; higher = sharper build-up)
+ *   C  - shape factor      (controls peak width; negative here for sign convention)
+ *   D  - peak factor       (peak Fy / Fz; ~= peak friction coefficient)
+ *   E  - curvature factor  (shifts the slip angle at peak; 0 = symmetric)
  */
 #define TYRE_B   12.33675f
 #define TYRE_C   -1.4203069f

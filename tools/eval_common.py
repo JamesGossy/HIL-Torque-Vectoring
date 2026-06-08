@@ -1,16 +1,15 @@
 """Shared helpers for the lap-evaluation tools.
 
-The headless evaluator (tests/tool_eval_lap.c) prints one machine-readable line:
+The headless evaluator (tools/eval_lap.c) prints one machine-readable line:
 
     RESULT mean_cte=.. worst_cte=.. worst_cte_sharp=.. sharp_viol=.. \
            offtrack=.. laps=.. lap_s=..
 
-Both tool_compare_eval.py (CI delta table) and tool_log_eval.py (local history
-CSV) parse that line, so the field list and the parser live here in one place to
-keep them in sync.
+compare_eval.py (the CI delta table) parses that line, so the field list and the
+parser live here in one place to keep them in sync.
 """
 
-# Canonical RESULT fields, in the order tool_eval_lap.c emits them.
+# Canonical RESULT fields, in the order eval_lap.c emits them.
 #   key: token name in the RESULT line
 #   label: human-readable name for tables
 #   unit: display unit ("" for dimensionless counts)
@@ -27,7 +26,7 @@ FIELDS = [
     ("offtrack",         "Off-track ticks (cone contact)",  "",   True,     True),
 ]
 
-# Ordered field keys — handy for CSV columns.
+# Ordered field keys - handy for CSV columns.
 FIELD_KEYS = [f[0] for f in FIELDS]
 
 # Keys that are integer counts (used for int vs float formatting).

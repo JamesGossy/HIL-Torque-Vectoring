@@ -73,14 +73,14 @@ jobs:
               echo "Δ column is the change versus the merge base."
             fi
             echo ""
-            python3 tests/tool_compare_eval.py --current current_result.txt $BASE_ARG
+            python3 tools/compare_eval.py --current current_result.txt $BASE_ARG
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Soft regression gate: lap-time regression beyond tolerance or an
           # increase in off-track ticks vs base. Advisory only — emitted as a
           # warning, does not fail the job (the hard gates below do that).
           if [ -n "$BASE_ARG" ]; then
-            python3 tests/tool_compare_eval.py --gate --current current_result.txt $BASE_ARG >/dev/null \
+            python3 tools/compare_eval.py --gate --current current_result.txt $BASE_ARG >/dev/null \
               || echo "::warning::Lap metrics regressed vs base (see the delta table in the run summary)"
           fi
 

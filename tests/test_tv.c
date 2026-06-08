@@ -79,7 +79,7 @@ static void test_low_speed_no_yaw_demand(void)
 {
     SensorData s = {0};
     s.velocity       = 0.1f;
-    s.steering_angle = 0.5f;  /* large steer — should produce no demand */
+    s.steering_angle = 0.5f;  /* large steer - should produce no demand */
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, KP_YAW_DEFAULT, &t);
 
@@ -103,7 +103,7 @@ static void test_left_turn_biases_right_wheels(void)
     ASSERT(t.fr > t.fl);   /* right (outer) > left (inner) */
     ASSERT(t.rr > t.rl);
     /* The differential is split rear-biased (TV_REAR_SHARE), so the rear axle's
-     * differential is larger than the front's — front == rear no longer holds. */
+     * differential is larger than the front's - front == rear no longer holds. */
     ASSERT((t.rr - t.rl) > (t.fr - t.fl));
 }
 
@@ -245,7 +245,7 @@ static void test_speed_gain_scaling(void)
 /*
  * Saturation-preserving clamp: with an extreme bias the outer wheel saturates
  * at the motor peak, but the differential (outer - inner) must be PRESERVED by
- * pushing the clipped amount onto the inner wheel (into regen) — not silently
+ * pushing the clipped amount onto the inner wheel (into regen) - not silently
  * collapsed.  High base torque so the outer side clips.
  */
 static void test_saturation_preserves_differential(void)

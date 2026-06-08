@@ -2,43 +2,18 @@
 #include <math.h>
 
 /*
- * path_planning.c
- *
- * Stage 1: Gate detection
- * -----------------------
- * One gate per left cone, in cone order (the cone arrays are already ordered
- * along the track), paired to its nearest right cone and filtered by gate
- * width.  See extract_gates() for why this beats mutual-nearest-neighbour
- * pairing at hairpins.
- *
- * Stage 2: Centreline + uniform resampling
- * ----------------------------------------
- * The gate midpoints form a centreline (with a local corridor half-width).
- * That centreline is resampled to uniform arc-length spacing, which removes the
- * uneven spacing and overlapping-gate artefacts of one-point-per-cone (those
- * caused the start-straight spike).  See resample_centreline().
- *
- * Stage 3: Minimum-curvature racing line (global bending-energy minimisation)
- * --------------------------------------------------------------------------
- * Each uniform point carries a lateral offset along the track normal,
- * P_i = C_i + off_i * N_i.  We minimise sum_i ||P_{i-1} - 2 P_i + P_{i+1}||^2 by
- * sweeping the [1,-4,6,-4,1] Gauss-Seidel update over off, clamped to the
- * corridor.  See optimize_racing_line() for the derivation.
+ * Three stages:
+ *   1. Gate detection: pair each left cone with its nearest right cone.
+ *   2. Centreline resampling: take gate midpoints and resample to uniform spacing.
+ *   3. Minimum-curvature line: bend the line within the track corridor.
  */
 
-
-/* ------------------------------------------------------------------ */
-/* Cone position arrays (loaded from track struct)                     */
-/* ------------------------------------------------------------------ */
-
+/* Cone positions, loaded from the track struct. */
 static float left_x[MAX_CONES],  left_y[MAX_CONES];
 static float right_x[MAX_CONES], right_y[MAX_CONES];
 
 
-/* ------------------------------------------------------------------ */
-/* Gate extraction — mutual nearest-neighbour pairing + chain sort     */
-/* ------------------------------------------------------------------ */
-
+/* Gate extraction: pair each left cone with its nearest right cone. */
 #define PP_MAX_GATES     400
 #define MAX_GATE_WIDTH_M 10.0f   /* reject pairs wider than this (metres) */
 
@@ -57,7 +32,7 @@ static void extract_gates(int n_left, int n_right)
     float dx, dy, d, best_d;
     float max_w2 = MAX_GATE_WIDTH_M * MAX_GATE_WIDTH_M;
 
-    /* For each left cone: index of nearest right cone */
+    /* For each left cone, find the nearest right cone. */
     for (i = 0; i < n_left; i++) {
         nearest_right[i] = 0; best_d = 1e18f;
         for (j = 0; j < n_right; j++) {
@@ -68,28 +43,8 @@ static void extract_gates(int n_left, int n_right)
         }
     }
 
-    /*
-     * Build one gate per LEFT cone, in the order the cones are stored (the cone
-     * arrays are already ordered along the track).  Each left cone is paired to
-     * its nearest right cone, filtered by gate width.
-     *
-     * The previous mutual-nearest-neighbour rule was wrong at hairpins: there
-     * the tight (inside) boundary has few, bunched cones while the open side
-     * has many, so several outside cones share one inside apex cone.  Only one
-     * pairing can be mutual, so the apex cones were dropped and the racing line
-     * chorded straight across the corner.
-     *
-     * Anchoring on every left cone in cone order fixes both failure modes
-     * without any reordering:
-     *   - where the left side is the inside of a corner, each apex cone still
-     *     gets its own gate, so the line follows the apex;
-     *   - where the left side is the outside, the many outside cones all pair to
-     *     the inside apex cone and naturally fan around it.
-     * Because the gates inherit the cone ordering, no chain sort is needed and
-     * the racing line cannot become tangled (which a greedy nearest-neighbour
-     * sort can do once gates are dense).  The width filter still rejects long
-     * diagonal pairs.
-     */
+    /* One gate per left cone, in cone order, dropping pairs that are too wide.
+     * Cones are already ordered along the track, so gates inherit that order. */
     pp_n_gates = 0;
     for (i = 0; i < n_left && pp_n_gates < PP_MAX_GATES; i++) {
         int ri = nearest_right[i];
@@ -106,29 +61,14 @@ static void extract_gates(int n_left, int n_right)
 }
 
 
-/* ------------------------------------------------------------------ */
-/* Centreline, uniform resampling                                       */
-/* ------------------------------------------------------------------ */
-
-/*
- * Why resample instead of using one point per gate:
- *
- * One point per cone gives wildly uneven spacing (0.3 m to 5 m) and, where the
- * two boundaries have different cone counts, two adjacent cones can map to the
- * SAME opposite cone — producing overlapping gates that make the line zig-zag
- * (the start-straight spike).  Resampling the centreline to a uniform spacing
- * removes both problems: the racing line is then defined by evenly spaced
- * points whose corridor half-width is interpolated, independent of where the
- * individual cones happen to sit.
- */
+/* Centreline and uniform resampling.
+ * Resampling to even spacing avoids the uneven, overlapping gates you get from
+ * one point per cone. */
 
 #define RESAMPLE_SPACING_M  2.5f   /* target waypoint spacing, metres        */
 
-/*
- * RACING_MARGIN keeps the racing line at least this fraction of the local
- * track half-width away from each boundary.  Keep it modest: a large margin
- * over-constrains tight apexes.
- */
+/* RACING_MARGIN keeps the line this fraction of the half-width off each
+ * boundary. Keep it modest so tight apexes are not over-constrained. */
 #define RACING_MARGIN  0.15f
 #define OPT_PASSES     400
 
@@ -159,10 +99,8 @@ static void build_centreline(void)
     }
 }
 
-/*
- * Resample the closed centreline to uniform arc-length spacing, interpolating
- * position and half-width.  Fills rs_x/rs_y/rs_h and rs_n.
- */
+/* Resample the closed centreline to uniform spacing, interpolating position
+ * and half-width. */
 static void resample_centreline(void)
 {
     int   g = pp_n_gates;
@@ -180,9 +118,7 @@ static void resample_centreline(void)
     if (m > MAX_WAYPOINTS)   m = MAX_WAYPOINTS;
     float step = total / (float)m;
 
-    /* NOTE: this loop is O(m*g) — it re-walks from segment 0 for every output
-     * point.  Fine at FSG-2024 sizes (~100 gates, ~130 output points); a single
-     * forward sweep would reduce it to O(m+g) if the track ever grows large. */
+    /* O(m*g): re-walks from segment 0 per output point. Fine at track sizes. */
     int   seg     = 0;
     float seg_acc = 0.0f;
     float seg_len = 0.0f;
@@ -232,23 +168,10 @@ static void compute_normals(void)
 }
 
 
-/* ------------------------------------------------------------------ */
-/* Minimum-curvature racing line (global bending-energy minimisation)   */
-/* ------------------------------------------------------------------ */
-
-/*
- * The line is P_i = C_i + off_i * N_i, where C_i is the uniform centreline
- * point and N_i its unit normal — so the single degree of freedom per point is
- * always across-track (no gate skew) and the line stays in the corridor as
- * long as |off_i| <= (1 - 2*RACING_MARGIN) * half_width.
- *
- * We minimise the bending energy E = sum_i ||P_{i-1} - 2 P_i + P_{i+1}||^2.
- * Setting dE/doff_i = 0 (neighbours fixed) gives the [1,-4,6,-4,1] stencil:
- * with S_i = P_{i-2} - 4 P_{i-1} + 6 C_i - 4 P_{i+1} + P_{i+2} and |N_i| = 1,
- *     off_i = -(N_i . S_i) / 6,
- * swept Gauss-Seidel to convergence.  Because the points are uniformly spaced
- * the stencil is well conditioned and the result is smooth and spike-free.
- */
+/* Minimum-curvature racing line.
+ * Each point moves only across-track: P_i = C_i + off_i * N_i, clamped to the
+ * corridor. We minimise bending energy with a [1,-4,6,-4,1] Gauss-Seidel
+ * sweep, giving off_i = -(N_i . S_i) / 6. */
 static float rs_px(int i) { return rs_x[i] + rs_off[i] * rs_nx[i]; }
 static float rs_py(int i) { return rs_y[i] + rs_off[i] * rs_ny[i]; }
 
@@ -270,7 +193,6 @@ static void optimize_racing_line(void)
             int ip1 = (i + 1)     % n;
             int ip2 = (i + 2)     % n;
 
-            /* S_i = P_{i-2} - 4 P_{i-1} + 6 C_i - 4 P_{i+1} + P_{i+2} */
             float Sx = rs_px(im2) - 4.0f*rs_px(im1) + 6.0f*rs_x[i] - 4.0f*rs_px(ip1) + rs_px(ip2);
             float Sy = rs_py(im2) - 4.0f*rs_py(im1) + 6.0f*rs_y[i] - 4.0f*rs_py(ip1) + rs_py(ip2);
 
@@ -285,10 +207,7 @@ static void optimize_racing_line(void)
 }
 
 
-/* ------------------------------------------------------------------ */
-/* Public entry point                                                   */
-/* ------------------------------------------------------------------ */
-
+/* Public entry point. */
 void path_plan(Track *track)
 {
     int i;

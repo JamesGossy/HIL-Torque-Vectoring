@@ -35,7 +35,7 @@ static int g_passed = 0;
 /*
  * Build a minimal straight track: a single segment pointing east (+x), with
  * boundary cones at y = ±half_w. Uses a real track_init() layout isn't needed
- * here — we construct the waypoints directly so motion_control has a path to
+ * here - we construct the waypoints directly so motion_control has a path to
  * follow without depending on path_planning.
  */
 static Track make_straight_track(float length, float half_w)
@@ -151,7 +151,7 @@ static void test_steer_slew_rate(void)
     Track t = make_straight_track(50.0f, 2.5f);
     /* large lateral offset forces the controller to want maximum steer */
     VehicleState s = make_state(0.0f, -3.0f, 0.0f, 10.0f);
-    float max_step = MAX_STEER_RATE_RADS * MC_DT_S;
+    float max_step = MAX_STEER_RATE_RADS * CONTROL_DT_S;
 
     float prev_steer = s.steering;
     for (int i = 0; i < 10; i++) {

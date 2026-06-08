@@ -152,7 +152,7 @@ int main(void)
     track_init(&track);
 
     if (track.count < 2) {
-        fprintf(stderr, "track_init produced fewer than 2 waypoints — cannot run\n");
+        fprintf(stderr, "track_init produced fewer than 2 waypoints - cannot run\n");
         return 1;
     }
 
