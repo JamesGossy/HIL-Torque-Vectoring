@@ -268,9 +268,13 @@ need more pull to stay clean. Validate with `make eval`.
 
 This sim leaves things out on purpose, to stay readable rather than be a full
 racing simulator. Not modelled: suspension travel and body roll, motor and
-inverter dynamics, battery state, and brake torque vectoring (only drive torque
-is vectored). Use it to understand how the control logic works and to test that
-the ECU behaves correctly, not to predict real lap times.
+inverter dynamics, battery state, and separate friction brakes (the car brakes
+with motor regen only). Note that torque vectoring acts in both phases: the same
+left/right differential is applied whether the motors are driving or regen
+braking, so the car is vectored on corner entry as well as on power.
+
+Use it to understand how the control logic works and to test that the ECU
+behaves correctly, not to predict real lap times.
 
 
 ## Platform notes
