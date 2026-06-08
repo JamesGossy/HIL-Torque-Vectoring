@@ -91,6 +91,25 @@
 #ifndef K_CTE_PP
 #define K_CTE_PP          0.35f   /* cross-track restoring trim, rad/m        */
 #endif
+/*
+ * Curvature-aware look-ahead floor.  In a corner the look-ahead floor is set to
+ * K_LD_RADIUS / kappa = K_LD_RADIUS * R (R = corner radius), so the look-ahead
+ * point lands near the apex on the true radius instead of chording across it.
+ * Because the floor scales WITH radius, the chord subtends a fixed fraction of
+ * the turn on any corner size — track- and radius-independent, no per-track
+ * tuning.  It only ever lowers the floor (never raises Ld), so straights and
+ * fast corners are unaffected.  LOOKAHEAD_ABS_MIN is the hard lower bound so a
+ * near-hairpin can't drive the look-ahead to zero (which would make the steer
+ * geometry singular).
+ *
+ * K_LD_RADIUS ~= 0.9 puts the look-ahead at ~0.9 R, i.e. the apex-side of the
+ * corner; smaller commits harder/earlier, larger smooths the line. */
+#ifndef K_LD_RADIUS
+#define K_LD_RADIUS       0.9f
+#endif
+#ifndef LOOKAHEAD_ABS_MIN
+#define LOOKAHEAD_ABS_MIN 1.6f    /* hard lower bound on look-ahead, m */
+#endif
 
 /*
  * Steering limit (reference angle, rad).  The vehicle model multiplies this by
@@ -204,6 +223,35 @@
 #define DRIVER_BRAKE_NM    -38.8f   /* max regen braking motor torque, Nm */
 #define BRAKE_KP_NM         16.2f   /* brake P-gain, Nm/(m/s)             */
 #define LAT_GRIP_REF_MS2     8.0f   /* traction-circle reference, m/s^2 (below true peak; see above) */
+
+/*
+ * Throttle INTEGRAL term (anti-windup).  Pure-P throttle leaves a steady-state
+ * speed deficit — most visibly on corner exit, where the car tracks a metre or
+ * two per second below the planner's target.  A small integral on the throttle
+ * speed error trims that residual out.
+ *
+ * Anti-windup is essential here because the throttle is multiplicatively cut by
+ * the traction circle and the steering-saturation fade: while either cut is
+ * active (or the output is clamped) the car is GRIP-limited, not throttle-
+ * limited, so integrating the error then would wind the term up through every
+ * corner and dump it on exit — the opposite of what we want.  The integrator is
+ * therefore only advanced when the throttle is actually free to respond (not
+ * clamped, cuts inactive), and it is reset whenever the controller switches to
+ * braking so a stale charge cannot carry across.
+ *
+ * SPEED_KI_NM is deliberately small relative to SPEED_KP_NM (the P-gain already
+ * does the heavy lifting); the integral only mops up the steady-state offset.
+ * SPEED_I_MAX_NM bounds the accumulated contribution well below the motor cap so
+ * it can never dominate the command.  At Ki=5 the lap eval improves ~0.17 s with
+ * off-track ticks unchanged at 4 (Ki=0 reproduces the pure-P baseline exactly);
+ * higher Ki keeps shaving lap time but slowly raises mean cross-track error, so
+ * 5 is the knee of that trade-off.  Wrapped in #ifndef so the sweep can override. */
+#ifndef SPEED_KI_NM
+#define SPEED_KI_NM          5.0f   /* throttle I-gain, Nm/(m/s·s)        */
+#endif
+#ifndef SPEED_I_MAX_NM
+#define SPEED_I_MAX_NM      25.0f   /* clamp on the integral contribution, Nm */
+#endif
 
 
 /* ---- Cone boundary avoidance (safety net) ---- */

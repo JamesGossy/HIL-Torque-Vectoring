@@ -25,3 +25,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local lap-evaluation metric history (see `make eval-log`)
+tests/eval_history.csv

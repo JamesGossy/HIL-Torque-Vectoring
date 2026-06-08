@@ -12,6 +12,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need history so we can check out the base branch and evaluate it for
+          # the commit-to-commit delta below.
+          fetch-depth: 0
 
       - name: Install dependencies
         run: sudo apt-get install -y gcc make
@@ -21,6 +25,25 @@ jobs:
 
       - name: Run unit tests
         run: make test
+
+      - name: Base-branch lap evaluation (for delta)
+        id: base_eval
+        # Evaluate the merge target so the next step can show how this change
+        # moves the metrics. Best-effort: if the base can't be built/checked out
+        # (e.g. a brand-new branch with no common base), we skip the delta and
+        # the main step renders current-only. Never fails the job.
+        continue-on-error: true
+        run: |
+          BASE_REF="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$BASE_REF" ] || [ "$BASE_REF" = "0000000000000000000000000000000000000000" ]; then
+            echo "No usable base ref; skipping delta."
+            exit 0
+          fi
+          echo "Base ref: $BASE_REF"
+          git worktree add /tmp/base "$BASE_REF" || { echo "checkout failed"; exit 0; }
+          ( cd /tmp/base && make eval > /tmp/base_eval.txt 2>&1 ) || { echo "base eval failed"; exit 0; }
+          grep '^RESULT' /tmp/base_eval.txt > base_result.txt || echo "no RESULT in base"
+          cat base_result.txt || true
 
       - name: Lap evaluation
         id: eval
@@ -35,22 +58,31 @@ jobs:
             export "EVAL_${kv%%=*}=${kv#*=}"
           done
 
-          # Render a summary table onto the GitHub Actions run page.
+          # Render a summary table (with a Δ-vs-base column when the base eval
+          # ran) onto the GitHub Actions run page. tool_compare_eval.py owns the table
+          # formatting and the soft regression gate, so CI and local runs agree.
+          grep '^RESULT' eval_output.txt > current_result.txt
+          BASE_ARG=""
+          if [ -s base_result.txt ]; then BASE_ARG="--base base_result.txt"; fi
+
           {
             echo "## 🏎️ Lap evaluation"
             echo ""
             echo "Headless run of the motion-control → ECU → vehicle loop over the FSG 2024 track (50 s cap)."
+            if [ -n "$BASE_ARG" ]; then
+              echo "Δ column is the change versus the merge base."
+            fi
             echo ""
-            echo "| Metric | Value |"
-            echo "| --- | --- |"
-            echo "| Lap time | ${EVAL_lap_s} s |"
-            echo "| Laps completed (in 50 s) | ${EVAL_laps} |"
-            echo "| Mean cross-track error | ${EVAL_mean_cte} m |"
-            echo "| Worst cross-track error | ${EVAL_worst_cte} m |"
-            echo "| Worst CTE @ sharp corner | ${EVAL_worst_cte_sharp} m |"
-            echo "| Sharp-corner violations (>2 m) | ${EVAL_sharp_viol} |"
-            echo "| Off-track ticks (cone contact) | ${EVAL_offtrack} |"
+            python3 tests/tool_compare_eval.py --current current_result.txt $BASE_ARG
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # Soft regression gate: lap-time regression beyond tolerance or an
+          # increase in off-track ticks vs base. Advisory only — emitted as a
+          # warning, does not fail the job (the hard gates below do that).
+          if [ -n "$BASE_ARG" ]; then
+            python3 tests/tool_compare_eval.py --gate --current current_result.txt $BASE_ARG >/dev/null \
+              || echo "::warning::Lap metrics regressed vs base (see the delta table in the run summary)"
+          fi
 
           # Regression guard: fail the job if the car never completed a lap, or
           # went grossly off-track.  A small off-track count is tolerated because
