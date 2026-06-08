@@ -12,8 +12,12 @@
  * Three stages:
  *   1. Gate extraction: pair each left cone with its nearest right cone.
  *   2. Centreline resampling: resample gate midpoints to uniform spacing.
- *   3. Minimum-curvature line: sweep a bending-energy stencil to find the
- *      lowest-curvature line inside the cone corridor (wider arcs = more speed).
+ *   3. Minimum-lap-time line: seed with a minimum-curvature line, then refine
+ *      the cross-track offsets by coordinate descent on the actual lap time
+ *      (a forward+backward speed profile under the friction circle). Unlike a
+ *      purely geometric line this couples path and speed, so it produces late
+ *      apexes - sacrificing apex speed to straighten a corner exit onto a
+ *      straight. See path_planning.c for the full method.
  */
 
 void path_plan(Track *track);
