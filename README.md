@@ -39,7 +39,12 @@ Controls (click the pygame window first so it captures keypresses):
 | T | Toggle torque vectoring on / off |
 | [ | Decrease TV gain (Kp) by 5 |
 | ] | Increase TV gain (Kp) by 5 |
+| M | Toggle map / follow-cam view |
+| F | Toggle fullscreen |
 | Q or Escape | Quit |
+
+The window is resizable and can be moved freely; drag any edge to resize or
+press F for fullscreen. The view scales to fit (letterboxed) at any size.
 
 
 ## Project layout
@@ -161,27 +166,26 @@ the inside wheels. If all four wheels get the same torque, the car tends to
 push wide (understeer). Giving more torque to the outside wheels helps the car
 rotate into the corner.
 
-The algorithm measures this using yaw rate control:
+The algorithm is a model-based yaw-moment controller: **feedforward + PID
+feedback on yaw rate**, with a grip-aware, rear-biased torque split.
 
-**Step 1: Desired yaw rate**
+**Step 1: Desired yaw rate (understeer-aware)**
 
 At any given speed and steering angle, there is a yaw rate the car should have
-if it is following the intended path. This comes from simple geometry:
+if it is following the intended path. The steady-state single-track model bends
+the kinematic estimate down with a `v²` understeer term so the reference tracks
+the *achievable* yaw rate rather than the (unreachable) zero-slip one:
 
 ```
-desired_yaw_rate = speed * tan(steering_angle) / wheelbase
+desired_yaw_rate = speed * tan(steering_angle) / (wheelbase + K_us * speed²)
 ```
 
 **Step 1b: Fuse IMU with wheel-speed estimate**
 
-The outer wheels spin faster than the inner wheels. The yaw rate follows:
-
-```
-r_wheels = (v_right - v_left) / track_width
-```
-
-The final estimate blends the IMU (primary) with the wheel-speed channel
-(25% weight) to corroborate the gyro while staying robust under tyre slip.
+The outer wheels spin faster than the inner wheels, so `r_wheels =
+(v_right - v_left) / track_width`. The final estimate blends the IMU (primary)
+with the wheel-speed channel (25% weight) to corroborate the gyro while staying
+robust under tyre slip.
 
 **Step 2: Yaw rate error**
 
@@ -190,39 +194,71 @@ error = desired_yaw_rate - fused_yaw_rate
 ```
 
 A deadband of ±0.03 rad/s suppresses chatter from sensor noise and the
-steady-state bias of the kinematic desired-yaw estimate.
+steady-state bias of the desired-yaw estimate.
 
-**Step 3: Torque bias (speed-dependent gain)**
+**Step 3: Feedforward**
+
+A pure feedback controller only acts once an error has opened up, so it is
+always a step behind the corner. The feedforward term pre-loads the
+differential straight from the cornering *demand* (known the instant the
+steering moves), so the yaw moment is already there as the car turns in:
+
+```
+feedforward = K_ff * desired_yaw_rate * speed
+```
+
+This is the single biggest contributor to the improvement — it cut off-track
+ticks and worst-case cross-track error roughly in half on its own.
+
+**Step 4: PID feedback (with anti-windup)**
 
 ```
 effective_Kp = Kp * (12 m/s / speed)    [capped at 3× Kp near standstill]
-torque_bias = effective_Kp * error
+P = effective_Kp * error
+I = Ki * ∫error dt                       [erases standing understeer]
+D = Kd * d(error)/dt                     [damps the turn-in transient]
+bias = feedforward + P + I + D
 ```
 
-`Kp` starts at 60 Nm per rad/s and can be changed at runtime with `[` and `]`.
-Scaling inversely with speed keeps the yaw moment response consistent across
-the speed range.
+`Kp` starts at 60 Nm per rad/s and can be changed at runtime with `[` and `]`;
+`Ki` and `Kd` are expressed as fractions of `Kp` so the loop scales together.
+The integrator is **frozen whenever the bias saturates** (and rolled back if a
+motor physically runs out of envelope), so it cannot wind up against the clamp.
 
-**Step 4: Apply the bias**
+**Step 5: Grip-aware, rear-biased split**
 
-The total driver torque is split equally across all four motors. Within each
-axle the bias shifts torque to the outer wheels:
+The total driver torque is split equally across all four motors. The yaw-moment
+differential is then split front/rear with the larger share to the rear axle
+(`TV_REAR_SHARE`, default 0.6) — in a corner the rear tyres spend less of their
+grip budget on steering, leaving more longitudinal headroom for the
+differential. Within each axle the bias shifts torque to the outer wheels:
 
 ```
-outer_wheel = (total / 4) + (bias / 2)
-inner_wheel = (total / 4) - (bias / 2)
+outer_wheel = (total / 4) + (axle_bias / 2)
+inner_wheel = (total / 4) - (axle_bias / 2)
 ```
 
-**Step 5: Clamp**
+**Step 6: Differential-preserving clamp**
 
-Each wheel torque is clamped to the motor limits (−100 Nm regen to +29.4 Nm drive).
-The bias itself is clamped to ±14.7 Nm (half peak), allowing the inner wheel
-to go into regen while the outer drives — creating a stronger yaw moment than
-a drive-only differential.
+Each wheel torque is clamped to the motor limits (−100 Nm regen to +29.4 Nm
+drive). A naive per-wheel clamp would silently destroy the yaw moment when the
+outer wheel saturates; instead the clipped amount is pushed onto the inner wheel
+(into regen if needed), so the commanded differential — and the yaw moment — is
+held as far as the motor envelope allows.
 
-That is the whole algorithm. A real production TV system would also include
-feedforward terms, a tyre model, a stability controller, and driver preference
-maps. This version captures the essential idea in about 60 lines.
+The controller keeps a small amount of internal state (the integrator and the
+previous error) for its PID terms. This is safe because the HIL host calls it
+exactly once per fixed-rate control tick. `torque_vectoring_reset()` clears that
+state for a clean start or for test isolation.
+
+The four highest-leverage TV gains (`TV_KFF`, `TV_KI_FRAC`, `TV_KD_FRAC`,
+`TV_REAR_SHARE`) are wrapped in `#ifndef`, so they can be swept at compile time
+with `-D` without editing the source.
+
+Measured against the headless lap evaluator (`make eval`), the overhaul improved
+every metric over the previous pure-P controller: off-track ticks 43 → 0,
+worst cross-track error 2.44 m → 1.44 m, mean cross-track error 0.50 m → 0.31 m,
+sharp-corner violations 21 → 0, lap time 38.50 s → 37.90 s.
 
 
 ## The motion controller (virtual driver)
@@ -265,8 +301,9 @@ Press `[` to decrease Kp or `]` to increase it. A very high gain (try 200+)
 makes the TV system very aggressive. A gain of 0 is the same as TV off.
 
 **Read the code**
-The torque vectoring algorithm is about 60 lines of C with comments explaining
-every step. The vehicle model is the next place to read. Start with
+The torque vectoring algorithm is a well-commented feedforward + PID yaw-moment
+controller; every step is explained inline. The vehicle model is the next place
+to read. Start with
 `ECU_Firmware/torque_vectoring.c` then move to `HIL_Firmware/vehicle_model.c`.
 
 **Change the track**

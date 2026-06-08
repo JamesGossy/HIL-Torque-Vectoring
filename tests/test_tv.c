@@ -102,8 +102,9 @@ static void test_left_turn_biases_right_wheels(void)
 
     ASSERT(t.fr > t.fl);   /* right (outer) > left (inner) */
     ASSERT(t.rr > t.rl);
-    ASSERT_NEAR(t.fl, t.rl, 0.01f);  /* front = rear on same side */
-    ASSERT_NEAR(t.fr, t.rr, 0.01f);
+    /* The differential is split rear-biased (TV_REAR_SHARE), so the rear axle's
+     * differential is larger than the front's — front == rear no longer holds. */
+    ASSERT((t.rr - t.rl) > (t.fr - t.fl));
 }
 
 /*
@@ -132,7 +133,9 @@ static void test_symmetry(void)
     sR.steering_angle = -0.25f;
 
     WheelTorques tL, tR;
+    torque_vectoring_reset();
     torque_vectoring_update(&sL, 60.0f, KP_YAW_DEFAULT, &tL);
+    torque_vectoring_reset();
     torque_vectoring_update(&sR, 60.0f, KP_YAW_DEFAULT, &tR);
 
     ASSERT_NEAR(tL.fl, tR.fr, 0.01f);
@@ -227,7 +230,9 @@ static void test_speed_gain_scaling(void)
     sHigh.yaw_rate = -0.5f;
 
     WheelTorques tLow, tHigh;
+    torque_vectoring_reset();
     torque_vectoring_update(&sLow,  40.0f, KP_YAW_DEFAULT, &tLow);
+    torque_vectoring_reset();
     torque_vectoring_update(&sHigh, 40.0f, KP_YAW_DEFAULT, &tHigh);
 
     /* At low speed effective_kp = Kp*(12/6)=2*Kp; at high = Kp*(12/24)=0.5*Kp */
@@ -251,8 +256,11 @@ static void test_saturation_preserves_differential(void)
     WheelTorques t;
     torque_vectoring_update(&s, 104.0f, 300.0f, &t);  /* base ~26 Nm/wheel, saturating bias */
 
-    /* Commanded differential = saturated bias (= max_bias). */
-    float want_diff = MAX_MOTOR_TORQUE_NM * 0.5f;
+    /* Commanded rear differential = saturated bias (= max_bias) distributed by
+     * the rear share, which is weighted by 2x (see torque_vectoring.c step 7):
+     *   rear_diff = max_bias * (2 * TV_REAR_SHARE). */
+    float max_bias  = MAX_MOTOR_TORQUE_NM * 0.5f;
+    float want_diff = max_bias * (2.0f * TV_REAR_SHARE);
     ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f);   /* outer clipped at peak */
     ASSERT(t.rl >= MIN_MOTOR_TORQUE_NM - 0.001f);   /* inner in regen */
     /* Differential preserved despite the clip (would collapse under a naive clamp). */
@@ -262,19 +270,25 @@ static void test_saturation_preserves_differential(void)
 
 /* ---- Entry point ---- */
 
+/* Run one test with a clean controller state.  The TV controller keeps internal
+ * PID state across calls (correct for the continuous HIL loop, but it would let
+ * one test case's residual integrator/derivative memory leak into the next), so
+ * we reset between cases for isolation. */
+#define RUN(fn) do { torque_vectoring_reset(); fn(); } while (0)
+
 int main(void)
 {
-    test_zero_error_even_split();
-    test_low_speed_no_yaw_demand();
-    test_left_turn_biases_right_wheels();
-    test_right_turn_biases_left_wheels();
-    test_symmetry();
-    test_deadband();
-    test_clamp_upper();
-    test_clamp_lower();
-    test_zero_gain();
-    test_speed_gain_scaling();
-    test_saturation_preserves_differential();
+    RUN(test_zero_error_even_split);
+    RUN(test_low_speed_no_yaw_demand);
+    RUN(test_left_turn_biases_right_wheels);
+    RUN(test_right_turn_biases_left_wheels);
+    RUN(test_symmetry);
+    RUN(test_deadband);
+    RUN(test_clamp_upper);
+    RUN(test_clamp_lower);
+    RUN(test_zero_gain);
+    RUN(test_speed_gain_scaling);
+    RUN(test_saturation_preserves_differential);
 
     fprintf(stderr, "%d/%d tests passed\n", g_passed, g_tests);
     return (g_passed == g_tests) ? 0 : 1;
