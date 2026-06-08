@@ -44,14 +44,39 @@ static float wrap_pi(float a)
 /* ---- Two-pass speed planner ---- */
 
 /*
+ * Available braking deceleration, m/s^2, when the car is already using lateral
+ * grip at speed v on a corner of curvature kappa. The tyre shares one
+ * friction-circle budget GG_ACCEL_MS2 between cornering and braking:
+ *
+ *     a_lat^2 + a_lon^2 <= GG_ACCEL_MS2^2,   a_lat = v^2 * kappa
+ *  => a_lon = sqrt(GG^2 - a_lat^2)
+ *
+ * so the harder the car is cornering, the less is left for braking. The result
+ * is additionally capped at MAX_BRAKE_DECEL_MS2 (the powertrain/regen limit) and
+ * floored at a small positive value so the backward sweep always makes progress.
+ */
+static float brake_decel_avail(float v, float kappa)
+{
+    float a_lat = v * v * kappa;
+    float gg    = GG_ACCEL_MS2 * GG_ACCEL_MS2;
+    float a_lat2 = a_lat * a_lat;
+    float a_lon = (a_lat2 < gg) ? sqrtf(gg - a_lat2) : 0.0f;
+    if (a_lon > MAX_BRAKE_DECEL_MS2) a_lon = MAX_BRAKE_DECEL_MS2;
+    if (a_lon < 0.5f)                a_lon = 0.5f;   /* keep the sweep progressing */
+    return a_lon;
+}
+
+/*
  * Set a speed cap per upcoming waypoint from curvature, then back-propagate
- * braking limits. start_idx is the controller's progress index.
+ * braking limits under the friction circle. start_idx is the controller's
+ * progress index.
  */
 static float plan_target_speed(const VehicleState *state, const Track *track,
                                int start_idx)
 {
     float v_limit[SPEED_PLAN_STEPS];
     float seg_len[SPEED_PLAN_STEPS];  /* distance from point i to i+1 */
+    float seg_k  [SPEED_PLAN_STEPS];  /* curvature at point i, for the GG budget */
     int   count = track->count;
     int   n     = 0;
     float path_s = 0.0f;
@@ -79,6 +104,7 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
                         ? sqrtf(MAX_LATERAL_ACCEL_MS2 / kappa)
                         : TARGET_SPEED_MS;
         v_limit[n] = (v_curve < TARGET_SPEED_MS) ? v_curve : TARGET_SPEED_MS;
+        seg_k[n]   = kappa;
 
         float dx = track->points[cnext].x - track->points[ccur].x;
         float dy = track->points[cnext].y - track->points[ccur].y;
@@ -91,11 +117,15 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
 
     if (n == 0) return TARGET_SPEED_MS;
 
-    /* Backward pass: propagate braking from furthest waypoint. */
+    /* Backward pass: propagate braking from the furthest waypoint. The decel
+     * available over segment i is set by the friction circle at the DOWNSTREAM
+     * end (point i+1) - the deeper-into-the-corner end, where lateral load is
+     * highest and braking room is smallest. As an apex approaches, that room
+     * collapses, so the brake point is pushed back onto the preceding straight. */
     float v_sweep = v_limit[n - 1];
     for (i = n - 2; i >= 0; i--) {
-        float v_can_arrive = sqrtf(v_sweep*v_sweep
-                                   + 2.0f * MAX_BRAKE_DECEL_MS2 * seg_len[i]);
+        float a_brake    = brake_decel_avail(v_sweep, seg_k[i + 1]);
+        float v_can_arrive = sqrtf(v_sweep*v_sweep + 2.0f * a_brake * seg_len[i]);
         v_sweep = (v_limit[i] < v_can_arrive) ? v_limit[i] : v_can_arrive;
     }
 
@@ -105,7 +135,8 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
         float ddx   = track->points[wp0].x - state->x;
         float ddy   = track->points[wp0].y - state->y;
         float d_now = sqrtf(ddx*ddx + ddy*ddy);
-        float v_now = sqrtf(v_sweep*v_sweep + 2.0f * MAX_BRAKE_DECEL_MS2 * d_now);
+        float a_brake = brake_decel_avail(v_sweep, seg_k[0]);
+        float v_now = sqrtf(v_sweep*v_sweep + 2.0f * a_brake * d_now);
         if (v_now < TARGET_SPEED_MS) return v_now;
     }
 

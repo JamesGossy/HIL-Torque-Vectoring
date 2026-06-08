@@ -34,10 +34,14 @@
 /* Cross-track pull: Pure Pursuit has no restoring term once the car and its
  * look-ahead point share an offset, so this pulls the car back to the line.
  * It is tuned together with the corner-speed budget: the faster the corner
- * speed, the more pull is needed to keep the car off the apex cones. 0.70 is
- * the knee; more than this starts to oscillate. */
+ * speed, the more pull is needed to keep the car off the apex cones. With the
+ * minimum-lap-time line and the 5.0 m/s^2 budget, 0.80 is the value that keeps
+ * the car cleanly on the line. With the high (9.0) lateral budget the car
+ * corners much faster and drifts wide at 0.80, so it is pulled up to 1.25, which
+ * both cleans the lap and tightens the line through the fast corners. Past ~1.3
+ * it starts to oscillate. */
 #ifndef K_CTE_PP
-#define K_CTE_PP          0.70f   /* cross-track restoring trim, rad/m */
+#define K_CTE_PP          1.25f   /* cross-track restoring trim, rad/m */
 #endif
 
 /* In a corner the look-ahead floor is set to K_LD_RADIUS * corner_radius, so
@@ -81,13 +85,44 @@
 /* Corner-speed budget: v_corner = sqrt(a_lat / kappa). The tyres can hold
  * ~13 m/s^2, so this is conservative on purpose, leaving the tracker margin to
  * correct. This is the dominant lap-time lever on this corner-heavy track.
- * 3.7 (with K_CTE_PP 0.70) is the fastest setting that still runs a fully clean
- * lap; going faster needs a better racing line, not more budget. */
+ *
+ * 5.0 (with K_CTE_PP 0.80 and the minimum-LAP-TIME racing line, PP_GRIP_ACCEL
+ * matched to this value) is the fastest setting that still runs a fully clean
+ * lap (~32.4 s). It is well above the old 3.7 because the lap-time line opens
+ * the slow corners up to a feasible radius - a wider arc is followable at more
+ * speed, so the budget that used to clip apex cones no longer does. These three
+ * gains are coupled: raising this needs the line (PP_GRIP_ACCEL) shaped for the
+ * same budget and usually some K_CTE_PP trim. Past ~5.0 the car clips cones
+ * regardless of the line (5.1 falls off a cliff). Re-tune them together and
+ * always confirm 0 off-track with `make eval`. */
 #ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2   3.7f
+#define MAX_LATERAL_ACCEL_MS2   9.0f
 #endif
 
-#define MAX_BRAKE_DECEL_MS2     6.0f   /* braking decel used by the planner, m/s^2 */
+#define MAX_BRAKE_DECEL_MS2     5.6f   /* max straight-line braking decel, m/s^2 */
+
+/* Friction-circle (GG) budget, m/s^2. The tyre shares ONE grip budget between
+ * cornering and braking: a_lat^2 + a_lon^2 <= GG_ACCEL_MS2^2. The planner uses
+ * this so that braking INTO a corner is limited by the lateral load already in
+ * use - as the car approaches a tight apex, a_lat = v^2*kappa rises and eats the
+ * circle, leaving less for braking, which forces an earlier, harder brake on the
+ * straight before the corner (exactly what a real driver does). On fast corners
+ * a_lat is small, so almost the full circle is available for braking and they
+ * are essentially unaffected - this slows the car ONLY where it is genuinely
+ * grip-limited (the hairpins), instead of a flat budget that penalises
+ * everywhere. Set a little above MAX_LATERAL_ACCEL_MS2 (steady cornering is kept
+ * conservative; the combined circle has a touch more to give).
+ *
+ * 7.0 is the knee of the trade: it pulls the worst apex cross-track error down
+ * (the car brakes earlier for the hairpins and stops washing the front wide)
+ * for only ~0.5 s of lap time, because it slows the hairpins and leaves the fast
+ * corners alone. Raising it toward ~8 makes the circle never bind (= the old
+ * flat budget, more apex drift); lowering it brakes ever earlier (smoother but
+ * slower). Confirm 0 off-track with `make eval` after changing it. */
+#ifndef GG_ACCEL_MS2
+#define GG_ACCEL_MS2            7.0f
+#endif
+
 #define SPEED_PLAN_HORIZON_M   80.0f   /* how far ahead to scan for corners, m */
 #define SPEED_PLAN_STEPS        40     /* max waypoints in the scan */
 
@@ -108,8 +143,17 @@
 /* Traction-circle reference. Throttle is scaled by sqrt(1 - (ay/ref)^2), so it
  * backs off while the car is loaded laterally and powers up as the corner
  * opens. Set below the ~13 m/s^2 peak so the cut bites during normal cornering
- * (using the true peak left the car powering wide on exit). */
-#define LAT_GRIP_REF_MS2   8.0f
+ * (using the true peak left the car powering wide on exit).
+ *
+ * Raised to 11.0 with the high lateral budget: the corner-exit throttle cut was
+ * over-conservative for how much grip the car actually has, leaving exit
+ * acceleration on the table on a track that is ~80% corners. 11.0 lets the car
+ * power out harder while staying clean; pushing toward 13 powers wide off the
+ * line (off-track), so this is the clean edge. Coupled with K_CTE_PP - more exit
+ * power needs more cross-track pull to hold the line. */
+#ifndef LAT_GRIP_REF_MS2
+#define LAT_GRIP_REF_MS2   11.0f
+#endif
 
 /* Throttle integral, to trim the steady-state speed deficit on corner exit.
  * Kept small (P does the heavy lifting) and anti-wound: it only advances when
