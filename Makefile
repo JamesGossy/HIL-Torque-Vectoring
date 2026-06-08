@@ -45,7 +45,7 @@ TV_SRCS = tests/test_tv.c \
           ECU_Firmware/src/torque_vectoring.c
 
 EVAL     = $(HIL_BUILD)/eval_lap
-EVAL_SRCS = tests/tool_eval_lap.c \
+EVAL_SRCS = tools/eval_lap.c \
             HIL_Firmware/src/motion_control.c \
             HIL_Firmware/src/vehicle_model.c \
             HIL_Firmware/src/track.c \
@@ -53,7 +53,7 @@ EVAL_SRCS = tests/tool_eval_lap.c \
             ECU_Firmware/src/torque_vectoring.c
 
 PERF      = $(HIL_BUILD)/perf_sim
-PERF_SRCS = tests/tool_perf_sim.c \
+PERF_SRCS = tools/perf_sim.c \
             HIL_Firmware/src/motion_control.c \
             HIL_Firmware/src/vehicle_model.c \
             HIL_Firmware/src/track.c \
@@ -92,25 +92,13 @@ run: all
 	$(HIL_SIM)
 
 # Headless lap evaluation: runs the full motion-control -> ECU -> vehicle loop
-# as fast as possible (no real-time sleep) and prints lap-tracking metrics —
-# mean/worst cross-track error, sharp-corner behaviour, cone contacts, lap time.
-# Used to catch regressions in how well the virtual driver follows the racing
-# line (especially the tight FSG hairpins).
+# as fast as possible and prints lap-tracking metrics (mean/worst cross-track
+# error, cone contacts, lap time). Use it to catch driver regressions.
 eval: $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(EVAL) $(EVAL_SRCS) -lm && $(EVAL)
 
-# Same as `eval`, but also appends the machine-readable RESULT line (tagged with
-# timestamp + git SHA + dirty flag) to tests/eval_history.csv so you can track
-# how mean/worst CTE and lap time move across tuning iterations. The CSV is
-# gitignored — it is your local log. Header is written once on first run.
-eval-log: $(HIL_BUILD)
-	$(CC) $(HIL_FLAGS) -o $(EVAL) $(EVAL_SRCS) -lm
-	@$(EVAL) | python3 tests/tool_log_eval.py - tests/eval_history.csv
-
-# Compute-speed benchmark: runs the full tick loop with no real-time sleep for
-# 1 wall-clock second and reports throughput (ticks/s, real-time factor, laps
-# per wall-second).  Pass a different budget as the first argument, e.g.
-# `HIL_Firmware/build/perf_sim 5` for a 5-second run.
+# Compute-speed benchmark: runs the tick loop flat out for 1 wall-clock second
+# and reports throughput. Pass a different budget as arg 1 (e.g. perf_sim 5).
 perf: $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(PERF) $(PERF_SRCS) -lm && $(PERF)
 

@@ -4,57 +4,13 @@
 static const float PI = 3.14159265358979323846f;
 
 /*
- * vehicle_model.c  —  M25 2-DOF dynamic bicycle model
+ * vehicle_model.c  -  M25 2-DOF dynamic bicycle model.
  *
- * Improvements over the previous linear model
- * --------------------------------------------
- *
- * 1. Pacejka Magic Formula lateral tyres
- *    The old model used Fy = Ca * α clipped to ±μ*Fz.  The linear region was
- *    too stiff (the car never truly lost grip) and the hard clip caused a
- *    discontinuous jump in tyre force at the limit, making the yaw response
- *    unrealistically abrupt.
- *
- *    Pacejka gives a smooth, load-sensitive curve: force builds quickly at small
- *    slip, peaks, then gently trails off.  The key difference for the TV demo is
- *    that the FRONT axle saturates before the rear (because lf ≈ lr but the
- *    front has slightly less static load), producing visible understeer that TV
- *    can correct.  The smooth saturation also makes the correction continuous
- *    rather than bang-bang.
- *
- * 2. Aerodynamic downforce + quadratic drag
- *    Downforce = 0.5 * ρ * A * CLA * vx² adds to the static axle normal loads,
- *    so available lateral grip increases with speed.
- *    Drag = 0.5 * ρ * A * CDA * vx² is the physically correct quadratic form.
- *
- * 3. M25 parameters
- *    mass=260 kg, Izz=140 kg·m², lf=0.77 m, lr=0.78 m (nearly neutral balance),
- *    track=1.30 m, wheelRadius=0.254 m.
- *
- * 4. Ackermann per-wheel steering geometry
- *    Inner and outer wheel angles are computed separately from the signed
- *    reference steering input using INNER_STEERING_RATIO / OUTER_STEERING_RATIO.
- *    Per-wheel FL/FR steer angles are used throughout the force calculations.
- *
- * 5. Full 4-corner model (the big accuracy gain)
- *    Each wheel is treated individually rather than lumped into front/rear
- *    axles:
- *      • Velocity at each corner = v_CoG + ω × r_corner, so the slip angle is
- *        measured from that tyre's own velocity vector.
- *      • Normal load per wheel includes lateral load transfer (the outer tyres
- *        gain load, the inner tyres shed it), on top of the static split, aero
- *        downforce, and longitudinal transfer.
- *      • Pacejka runs per wheel, so the loaded outer tyres carry most of the
- *        cornering force and the unloaded inner tyres saturate first — the load
- *        sensitivity that gives torque vectoring something to exploit.
- *      • Each wheel's Fx/Fy is rotated into the body frame through its own
- *        steer angle and summed into the force/yaw balance about the CG.
- *    A stillstand guard zeroes slip below 0.1 m/s to avoid atan blow-up at rest.
- *
- * 6. Per-wheel RPM outputs
- *    Wheelspeeds (motor RPM) are computed from each corner's longitudinal
- *    velocity component and fed back into SensorData for the ECU — the ECU can
- *    now sense the real left/right speed split, not a single faked value.
+ * Full 4-corner model with per-wheel Pacejka lateral tyres, aero downforce and
+ * drag, longitudinal and lateral load transfer, and a per-wheel friction
+ * circle. Per-wheel slip, load and forces let the loaded outer tyres carry most
+ * grip while the inner tyres saturate first, the load sensitivity torque
+ * vectoring exploits.
  *
  * Structure
  * ---------
@@ -76,16 +32,9 @@ static const float PI = 3.14159265358979323846f;
 /* Pacejka lateral tyre force                                           */
 /* ------------------------------------------------------------------ */
 
-/*
- * Returns the lateral force for one axle.
- *
- * alpha — slip angle:  positive = tyre pointing left of travel → Fy left (+)
- * Fz    — total normal load on the axle, N
- *
- * Formula:  Fy = D * Fz * sin( C * atan( B*κ − E*(B*κ − atan(B*κ)) ) )
- * κ = −alpha maps our sign convention to the reference formula's convention.
- * With C < 0 this gives Fy > 0 (leftward) for positive alpha. ✓
- */
+/* Pacejka lateral force for one tyre. alpha = slip angle (+ = points left of
+ * travel, giving + Fy). Fz = normal load. k = -alpha maps our sign convention
+ * to the reference formula. */
 static float pacejka_lat(float alpha, float Fz)
 {
     float k     = -alpha;
@@ -152,26 +101,15 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     float F_drag      = CDA * q;
 
     /* ------------------------------------------------------------------ */
-    /* 3. Normal loads — per wheel                                          */
+    /* 3. Normal loads, per wheel                                           */
     /*    static split + aero (50/50) + longitudinal + lateral transfer    */
-    /*                                                                     */
-    /* Longitudinal transfer (ax > 0 → loads rear) is shared across the    */
-    /* two wheels of an axle.  Lateral transfer (ay > 0 → loads the right  */
-    /* wheels, since +ay points left) is split front/rear by the static    */
-    /* axle-load fraction — a good approximation without an explicit roll  */
-    /* model.  Per-wheel Fz lets the Pacejka tyres saturate individually,  */
-    /* so the heavily-loaded outer tyres carry most of the cornering force  */
-    /* and the lightly-loaded inner tyres give up earlier — exactly the    */
-    /* load sensitivity that makes torque vectoring worthwhile.            */
     /* ------------------------------------------------------------------ */
 
     float Fz_front_axle = MASS_KG * g * (CG_TO_REAR_M  / WHEELBASE_M) + F_downforce * 0.5f;
     float Fz_rear_axle  = MASS_KG * g * (CG_TO_FRONT_M / WHEELBASE_M) + F_downforce * 0.5f;
 
-    /* Load transfer is driven by the roll/pitch-lagged accelerations (see
-     * shared/vehicle_config.h).  Using the lagged values — not the same-tick ax/ay
-     * that the transfer itself helps create — is what keeps the model from
-     * ringing tick-to-tick. */
+    /* Use the lagged accelerations (not same-tick ax/ay) so the model does not
+     * ring tick-to-tick. */
     float dFz_long = s->ax_filt * MASS_KG * CG_HEIGHT_M / WHEELBASE_M;
     Fz_front_axle -= dFz_long;
     Fz_rear_axle  += dFz_long;
@@ -179,16 +117,14 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     if (Fz_front_axle < 50.0f) Fz_front_axle = 50.0f;
     if (Fz_rear_axle  < 50.0f) Fz_rear_axle  = 50.0f;
 
-    /* Lateral load transfer per axle: ΔFz = m_axle * ay * h / track.        */
-    /* m_axle is that axle's share of sprung mass (by the static CG split);   */
-    /* using the static split here avoids feeding aero/longitudinal transfer  */
-    /* back into the lateral term. */
+    /* Lateral transfer per axle: dFz = m_axle * ay * h / track. m_axle uses
+     * the static CG split so aero/longitudinal transfer is not fed back in. */
     float m_front = MASS_KG * (CG_TO_REAR_M  / WHEELBASE_M);
     float m_rear  = MASS_KG * (CG_TO_FRONT_M / WHEELBASE_M);
     float dFz_lat_front = m_front * s->ay_filt * CG_HEIGHT_M / TRACK_WIDTH_FRONT_M;
     float dFz_lat_rear  = m_rear  * s->ay_filt * CG_HEIGHT_M / TRACK_WIDTH_REAR_M;
 
-    /* +ay loads the RIGHT wheels (FR, RR); left wheels (FL, RL) unload */
+    /* +ay loads the right wheels (FR, RR); left wheels (FL, RL) unload */
     float Fz_fl = 0.5f * Fz_front_axle - dFz_lat_front;
     float Fz_fr = 0.5f * Fz_front_axle + dFz_lat_front;
     float Fz_rl = 0.5f * Fz_rear_axle  - dFz_lat_rear;
@@ -202,14 +138,10 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     /* ------------------------------------------------------------------ */
     /* 4. 4-corner velocities and per-wheel slip angles                     */
     /*                                                                     */
-    /* v_corner = v_CoG + ω × r_corner  (2-D: ω = r k̂)                   */
-    /*   v_corner_x = vx − r * r_corner_y                                 */
-    /*   v_corner_y = vy + r * r_corner_x                                 */
-    /*                                                                     */
-    /* Each tyre's slip angle is measured from ITS OWN velocity vector, so  */
-    /* the toe-out from Ackermann and the fore/aft yaw-induced lateral      */
-    /* velocity are captured per corner rather than lumped at the axle      */
-    /* mid-point.                                                          */
+    /* v_corner = v_CoG + omega x r_corner:                                */
+    /*   v_corner_x = vx - r * r_corner_y                                  */
+    /*   v_corner_y = vy + r * r_corner_x                                  */
+    /* Slip is measured from each tyre's own velocity vector.              */
     /* ------------------------------------------------------------------ */
 
     float half_sf = TRACK_WIDTH_FRONT_M * 0.5f;
@@ -235,7 +167,7 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     float alpha_rl = 0.0f, alpha_rr = 0.0f;
 
     if (!stillstand && vx > 0.5f) {
-        /* Per-wheel slip = wheel steer angle − velocity-vector angle */
+        /* Per-wheel slip = steer angle - velocity-vector angle */
         alpha_fl = s->steer_fl - atanf(vy_fl / ((fabsf(vx_fl) > eps) ? vx_fl : eps));
         alpha_fr = s->steer_fr - atanf(vy_fr / ((fabsf(vx_fr) > eps) ? vx_fr : eps));
         alpha_rl =             - atanf(vy_rl / ((fabsf(vx_rl) > eps) ? vx_rl : eps));
@@ -253,9 +185,7 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
 
     /* ------------------------------------------------------------------ */
     /* 6. Per-wheel longitudinal drive force                                */
-    /*                                                                     */
-    /* Gate: suppress force when the wheel has a small command AND the car  */
-    /* is barely moving (avoids creep artefacts at standstill).            */
+    /*    Gate suppresses force on a small command at standstill (no creep). */
     /* ------------------------------------------------------------------ */
 
     float rpm2ms = WHEEL_RADIUS_M * 2.0f * PI / (GEAR_RATIO * 60.0f);
@@ -273,26 +203,11 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     /* ------------------------------------------------------------------ */
     /* 6b. Combined-slip friction circle (per wheel)                        */
     /*                                                                     */
-    /* A tyre has ONE friction budget shared between longitudinal (drive/  */
-    /* brake) and lateral (cornering) force: sqrt(Fx^2 + Fy^2) <= mu*Fz.    */
-    /* The old model computed Fx straight from motor torque with NO limit,  */
-    /* so a wheel could put down arbitrary drive force while already at its  */
-    /* lateral grip limit — the car could accelerate hard mid-corner with   */
-    /* no penalty (measured: up to 2.4x the tyres' real longitudinal grip). */
-    /* That removed the very lateral-vs-longitudinal trade-off that torque  */
-    /* vectoring exists to manage.                                          */
-    /*                                                                     */
-    /* Here each wheel's (Fx, Fy) is projected back onto its own friction   */
-    /* circle of radius mu*Fz_i (Fz_i already carries load transfer, so the */
-    /* loaded outer tyres keep a bigger budget than the unloaded inner ones */
-    /* — the load sensitivity TV exploits).  BOTH components are scaled by   */
-    /* the same factor so the resultant lands on the circle: powering up     */
-    /* mid-corner now bleeds lateral grip, which is the physical effect the  */
-    /* controller's traction-circle throttle cut is meant to pre-empt.       */
-    /*                                                                     */
-    /* MU_GRIP is set near the Pacejka lateral peak (~D), so a pure-cornering */
-    /* tyre (Fx≈0) is essentially unaffected — we only clip the COMBINED      */
-    /* demand, we do not weaken the lateral model the car already produces.   */
+    /* A tyre shares one friction budget between drive/brake and cornering: */
+    /* sqrt(Fx^2 + Fy^2) <= mu*Fz. Project each wheel's (Fx, Fy) back onto   */
+    /* its circle of radius MU_GRIP*Fz_i, scaling both by the same factor so */
+    /* powering up mid-corner bleeds lateral grip. MU_GRIP sits near the     */
+    /* Pacejka peak, so a pure-cornering tyre is barely touched.             */
     /* ------------------------------------------------------------------ */
     {
         float Fmax_fl = MU_GRIP * Fz_fl;
@@ -317,11 +232,11 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     /* ------------------------------------------------------------------ */
     /* 7. Equations of motion                                               */
     /*                                                                     */
-    /* Per-wheel front tyre forces resolve into the vehicle frame through    */
-    /* that wheel's own steer angle:                                         */
-    /*   Fx_body =  cos(δ)*Fx − sin(δ)*Fy                                   */
-    /*   Fy_body =  sin(δ)*Fx + cos(δ)*Fy                                   */
-    /* Rear wheels are unsteered (δ = 0).                                   */
+    /* Front tyre forces resolve into the body frame through each wheel's   */
+    /* steer angle:                                                         */
+    /*   Fx_body =  cos(d)*Fx - sin(d)*Fy                                   */
+    /*   Fy_body =  sin(d)*Fx + cos(d)*Fy                                   */
+    /* Rear wheels are unsteered.                                           */
     /* ------------------------------------------------------------------ */
 
     float Fx_fl_body = cos_fl * Fx_fl - sin_fl * Fy_fl;
@@ -335,11 +250,9 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     float vy_dot = (Fy_fl_body + Fy_fr_body + Fy_rl + Fy_rr) / MASS_KG
                    - vx * r;
 
-    /* Yaw moment is the sum of each wheel-force's moment about the CG.       */
-    /* A body-frame force (Fx_body, Fy_body) at corner (rx, ry) contributes   */
-    /*   M = rx * Fy_body − ry * Fx_body.                                     */
-    /* The Fx terms (×half-track) carry the torque-vectoring differential;    */
-    /* the Fy terms (×lf/lr) carry the conventional cornering yaw moment.     */
+    /* Yaw moment = sum of each wheel force's moment about the CG:
+     * M = rx * Fy_body - ry * Fx_body. The Fx terms carry the TV differential,
+     * the Fy terms the cornering yaw moment. */
     float r_dot = (
           (rx_fl * Fy_fl_body - ry_fl * Fx_fl_body)
         + (rx_fr * Fy_fr_body - ry_fr * Fx_fr_body)
@@ -350,22 +263,17 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
     s->ay = vy_dot + vx * r;   /* lateral accel for G-G display */
 
     /* ------------------------------------------------------------------ */
-    /* 8. Integrate states  (semi-implicit / symplectic Euler)              */
+    /* 8. Integrate states (semi-implicit Euler)                            */
     /*                                                                     */
-    /* Velocities are advanced here FIRST, then heading and position (step  */
-    /* 9) are integrated from the just-updated yaw_rate / velocity / vy —    */
-    /* not the start-of-tick values.  This semi-implicit ordering is what    */
-    /* keeps the integrator stable on the stiff Pacejka tyre model at 100 Hz */
-    /* (a fully-explicit scheme that propagated position from the old        */
-    /* velocities would lag and could ring at the grip limit).              */
+    /* Advance velocities first, then heading/position (step 9) from the    */
+    /* updated values. This keeps the stiff Pacejka model stable at 100 Hz. */
     /* ------------------------------------------------------------------ */
 
     s->vy       += vy_dot * dt;
     s->yaw_rate += r_dot  * dt;
     s->velocity += s->ax  * dt;
 
-    /* First-order lag on the accelerations that drive load transfer.
-     * alpha = dt / (tau + dt) is the discrete one-pole coefficient. */
+    /* First-order lag on the accelerations that drive load transfer. */
     {
         float alpha_lp = dt / (LOAD_TRANSFER_TAU_S + dt);
         s->ax_filt += alpha_lp * (s->ax - s->ax_filt);
@@ -378,15 +286,8 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
         s->yaw_rate *= 0.90f;
     }
 
-    /* Yaw-rate safety net: r <= 1.5 * mu*g / vx.
-     *
-     * The per-wheel friction circle (step 6b) is now the PRIMARY grip limiter
-     * and governs normal handling, so this clamp no longer needs to shape the
-     * yaw response — it was previously doing double duty as a stand-in for the
-     * missing combined-slip limit.  Widened to 1.5x the steady-state limit so
-     * it only catches a numerical blow-up (e.g. an integration spike at the
-     * grip edge) without cutting into yaw rates the tyre model legitimately
-     * produces during transient rotation. */
+    /* Yaw-rate safety net (r <= 1.5 * mu*g / vx). The friction circle is the
+     * primary grip limiter; this only catches numerical blow-ups. */
     if (vx > 1.0f) {
         float r_max = 1.5f * (MU_TYRE * g) / vx;
         if (s->yaw_rate >  r_max) s->yaw_rate =  r_max;

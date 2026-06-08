@@ -22,7 +22,7 @@ This runs the full motion-control → ECU → vehicle loop over the FSG 2024 tra
 as fast as possible (no real-time sleep) and prints lap-tracking metrics. A good
 change keeps **off-track ticks at 0** and **a completed lap**, and should not
 regress mean/worst cross-track error or lap time. The source is
-`tests/tool_eval_lap.c`; the machine-readable summary is the `RESULT ...` line.
+`tools/eval_lap.c`; the machine-readable summary is the `RESULT ...` line.
 
 Keep evaluation runs at/under **50 s of simulated time** (one lap is ~32 s) —
 the evaluator already caps at 50 s. Longer runs waste time without adding
@@ -38,7 +38,7 @@ wide.
 The four highest-leverage tuning gains in `HIL_Firmware/include/motion_control.h`
 (`MAX_LATERAL_ACCEL_MS2`, `K_LOOKAHEAD`, `LOOKAHEAD_MIN_M`, `MAX_STEER_RATE_RADS`)
 are wrapped in `#ifndef`, so they can be overridden at compile time with `-D`
-without editing the header. `tests/sweep.sh` sweeps the first three and prints a
+without editing the header. `tools/sweep.sh` sweeps the first three and prints a
 table sorted by clean-lap time. When picking a "fastest" config, only accept one
 with **0 off-track ticks** — faster laps that clip apex cones are not valid.
 

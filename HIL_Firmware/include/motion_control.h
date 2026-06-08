@@ -3,287 +3,34 @@
 
 #include "track.h"
 #include "vehicle_model.h"
+#include "../../shared/parameters_config.h"
 
 /*
  * motion_control.h
  *
- * The real-time "driver" layer.  Runs every simulation tick and outputs:
- *   - a steering angle written into state->steering
- *   - a driver torque demand (return value, Nm; positive = throttle,
- *     negative = regenerative braking)
+ * The "driver" layer. Runs every tick and produces a steering angle (written
+ * into state->steering) and a driver torque demand (the return value, Nm;
+ * positive is throttle, negative is regen braking).
  *
+ * Steering is Pure Pursuit: it aims at a point on the racing line a look-ahead
+ * distance ahead of the rear axle and computes the single-arc steer angle that
+ * drives the rear axle through it. A short look-ahead at low speed commits the
+ * car to a tight apex; a longer one at speed keeps the line smooth. A small
+ * cross-track trim pulls the car back when it drifts off the line, and a cone
+ * repulsion term is a safety net near the boundary.
  *
- * STEERING — Pure Pursuit (geometric look-ahead)
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * The previous Stanley law failed on the tight FSG hairpins: it is purely
- * reactive (heading error + cross-track feedback), so it turned in late, its
- * feedback then saturated at the steering limit, and the car ran several metres
- * wide while pinned at full lock.
+ * Speed is a two-pass planner: a forward pass caps each waypoint's speed from
+ * its curvature, then a backward pass propagates braking from the furthest
+ * waypoint back to the car. Throttle is faded out near full steering lock,
+ * where the front tyres are saturated turning and extra power only pushes wide.
  *
- * Pure Pursuit is a GEOMETRIC tracker.  It picks a target point on the racing
- * line a look-ahead distance Ld in front of the rear axle and computes the
- * single-arc steer angle that drives the rear axle through it:
- *
- *   delta = atan2( 2 * WHEELBASE * sin(alpha), Ld )
- *
- *   alpha   angle from the car heading to the look-ahead point (rad)
- *   Ld      look-ahead distance, adapted to speed:
- *             Ld = clamp(K_LOOKAHEAD * v, LOOKAHEAD_MIN_M, LOOKAHEAD_MAX_M)
- *
- * A short Ld at low speed lets the car commit to the apex of a tight corner
- * instead of chording across it; a longer Ld at speed keeps the line smooth and
- * stable on the straights.  Because the steer command is computed directly from
- * the geometry of the corner ahead, it does not lag-then-saturate the way the
- * reactive Stanley feedback did.
- *
- * A gentle cone-repulsion term is added as a safety net: if the car comes
- * within BOUNDARY_WARN_M of a boundary cone it is nudged away from that wall.
- *
- *
- * SPEED — two-pass backward-sweep corner planner
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * Pass 1 (forward): for each upcoming waypoint within SPEED_PLAN_HORIZON_M
- *   v_limit[i] = min(TARGET_SPEED_MS, sqrt(MAX_LATERAL_ACCEL_MS2 / kappa)).
- * Pass 2 (backward): propagate braking constraints from the furthest waypoint
- *   back to the car:  v[i] = min(v_limit[i], sqrt(v[i+1]^2 + 2*a_brake*ds)).
- * This models late-braking into corners and acceleration out of them.
- *
- * A steering-saturation throttle cut (see STEER_SAT_FRAC) closes the loop the
- * old controller was missing: when the wheel is near full lock the front tyres
- * are already spending their whole grip budget on turning, so any throttle just
- * powers the car wide.  Throttle is faded out as the steer command approaches
- * the limit, which is what stops the mid-hairpin "accelerate while pinned at
- * full lock and slide wide" failure.
+ * All tunable gains live in shared/parameters_config.h.
  */
 
-
-/* ---- Pure Pursuit gains ---- */
 /*
- * Look-ahead distance adapts to speed:  Ld = clamp(K_LOOKAHEAD*v, MIN, MAX).
- *
- * K_LOOKAHEAD sets how far ahead (in seconds of travel) the tracker aims.  At
- * the ~2.5 m waypoint spacing of this track, a short floor (LOOKAHEAD_MIN_M) is
- * what lets the car bite into the tight hairpins: the target point sits just
- * past the apex, so the geometric arc bends hard into the corner instead of
- * chording across it.  The cap (LOOKAHEAD_MAX_M) keeps the line smooth at speed.
- *
- * A small cross-track trim (K_CTE_PP) is layered on Pure Pursuit so that, if the
- * car has been pushed off the line, it is actively pulled back rather than just
- * running parallel to it — Pure Pursuit alone has no restoring term once the
- * look-ahead point and the car drift onto the same offset line.
- */
-/* These four gains are wrapped in #ifndef so a parameter sweep can override
- * them from the compiler command line (-DK_LOOKAHEAD=0.5f etc.) without editing
- * this file.  The values below are the tuned defaults. */
-#ifndef K_LOOKAHEAD
-#define K_LOOKAHEAD       0.45f   /* look-ahead time, s (Ld = this * v)       */
-#endif
-#ifndef LOOKAHEAD_MIN_M
-#define LOOKAHEAD_MIN_M   2.8f    /* minimum look-ahead, m (tight corners)
-                                   * — 2.8 won the sweep: fastest fully clean
-                                   *   lap (32.0 s, 0 cone contacts).  Smaller
-                                   *   floors shaved nothing off lap time but
-                                   *   clipped 5–7 apex cones. */
-#endif
-#ifndef LOOKAHEAD_MAX_M
-#define LOOKAHEAD_MAX_M   9.0f    /* maximum look-ahead, m (straights)        */
-#endif
-#ifndef K_CTE_PP
-#define K_CTE_PP          0.70f   /* cross-track restoring trim, rad/m
-                                   * — raised from 0.35 alongside the higher
-                                   *   corner-speed budget (MAX_LATERAL_ACCEL_MS2
-                                   *   3.0 -> 3.7).  At the faster corner speed a
-                                   *   weak pull let the car drift the last
-                                   *   ~0.25 m onto the apex cones it used to
-                                   *   clear; the stronger pull holds it on the
-                                   *   line (mean CTE 0.31 -> 0.19 m) so the
-                                   *   faster lap stays fully clean (0 off-track).
-                                   *   Pushed too hard (>0.8 at this speed) it
-                                   *   starts to oscillate, so 0.70 is the knee. */
-#endif
-/*
- * Curvature-aware look-ahead floor.  In a corner the look-ahead floor is set to
- * K_LD_RADIUS / kappa = K_LD_RADIUS * R (R = corner radius), so the look-ahead
- * point lands near the apex on the true radius instead of chording across it.
- * Because the floor scales WITH radius, the chord subtends a fixed fraction of
- * the turn on any corner size — track- and radius-independent, no per-track
- * tuning.  It only ever lowers the floor (never raises Ld), so straights and
- * fast corners are unaffected.  LOOKAHEAD_ABS_MIN is the hard lower bound so a
- * near-hairpin can't drive the look-ahead to zero (which would make the steer
- * geometry singular).
- *
- * K_LD_RADIUS ~= 0.9 puts the look-ahead at ~0.9 R, i.e. the apex-side of the
- * corner; smaller commits harder/earlier, larger smooths the line. */
-#ifndef K_LD_RADIUS
-#define K_LD_RADIUS       0.9f
-#endif
-#ifndef LOOKAHEAD_ABS_MIN
-#define LOOKAHEAD_ABS_MIN 1.6f    /* hard lower bound on look-ahead, m */
-#endif
-
-/*
- * Steering limit (reference angle, rad).  The vehicle model multiplies this by
- * the Ackermann ratios (~0.20–0.26) to get the road-wheel angles, so the
- * reference angle is much larger than the actual wheel angle.  The OLD value of
- * 0.6 rad gave only ~0.13 rad at the wheel -> a kinematic minimum radius of
- * ~11 m.  The tightest FSG hairpin on this track is ~3.2 m radius, so at the old
- * limit the car PHYSICALLY could not follow the line and ran wide no matter how
- * good the tracker was.  1.7 rad reference -> ~0.39 rad at the loaded outer
- * wheel -> R_min ~3.8 m, enough to negotiate the hairpins with the speed plan
- * holding entry speed down. */
-#define MAX_STEER_RAD  1.7f    /* steering reference limit (R_min ~3.8 m)  */
-
-/* Throttle is faded out as the steer command rises above STEER_SAT_FRAC of the
- * limit: near full lock the front tyres are saturated turning, so throttle only
- * powers the car wide.  At/below the fraction throttle is unaffected; at the
- * limit it is fully cut. */
-#define STEER_SAT_FRAC  0.7f
-
-/*
- * Steering slew-rate limit (reference angle), rad/s.  The tracker can jump the
- * commanded angle discontinuously tick-to-tick (e.g. when the nearest-segment
- * projection steps to a new waypoint); a real driver / steering actuator
- * cannot.  The motion controller runs once per sim tick, so the per-tick step
- * is limited to MAX_STEER_RATE_RADS * MC_DT_S.  Raised from 4.0 to 8.0 rad/s
- * alongside the larger MAX_STEER_RAD so the wheel can still reach the (now
- * larger) lock fast enough to catch a tight hairpin turn-in.
- */
-#ifndef MAX_STEER_RATE_RADS
-#define MAX_STEER_RATE_RADS  8.0f
-#endif
-#define MC_DT_S              0.01f   /* sim tick period, s (100 Hz) -- matches DT */
-
-/*
- * Nearest-segment search window around the controller's OWN progress index
- * (s_path_idx), not track->current_index.  The controller projects the car
- * onto the racing line every tick and advances its progress index with
- * continuity, so a slide never makes it skip past a corner.
- */
-#define NEAREST_SEARCH_BACK   3    /* segments to look back                */
-#define NEAREST_SEARCH_FWD   30    /* segments to look forward             */
-
-
-/* ---- Speed planner ---- */
-/*
- * MAX_BRAKE_DECEL_MS2 must not exceed what the drivetrain can actually deliver.
- * The driver brake command is clamped to DRIVER_BRAKE_NM = -38.8 Nm per motor.
- * After the 15.47 gear ratio that is ~600 Nm of wheel braking torque per wheel;
- * four wheels give ~2400 Nm total -> ~9 m/s^2 peak.  We plan for 5 m/s^2 so
- * the car commits to braking early enough rather than arriving at the corner
- * too fast (a planner that uses the peak decel tends to over-shoot).
- *
- */
-#ifndef TARGET_SPEED_MS
-#define TARGET_SPEED_MS        20.0f   /* cruise speed on straights, m/s   */
-#endif
-/*
- * MAX_LATERAL_ACCEL_MS2 is the corner-speed budget: v_corner = sqrt(a_lat/kappa).
- * The car's true peak is ~13 m/s^2, so the planner is still conservative — it
- * deliberately leaves margin for the Pure-Pursuit tracker to correct rather than
- * planning to the grip limit (a plan at the true peak over-shoots every corner).
- *
- * Raised from 3.0 to 3.7 once the cross-track pull (K_CTE_PP) was strengthened.
- * A headless-eval sweep showed corner speed is the lap-time bottleneck on this
- * track (the car already tracks its target speed ~98% of the lap), but raising
- * a_lat alone clipped a few apex cones because the car drifted wide of the line.
- * 3.7 with K_CTE_PP = 0.70 is the fastest setting that still runs a FULLY CLEAN
- * lap (0 off-track ticks): lap 37.9 s -> 35.4 s, mean CTE 0.31 -> 0.19 m, worst
- * 1.44 -> 1.08 m.  Pushing a_lat past ~3.7 starts grazing apex cones again no
- * matter how hard the tracker pulls, because the min-curvature racing line
- * itself hugs those apexes — going faster than this needs a feasibility-aware
- * racing line (path planning), not more speed budget.
- *
- * NOTE: even at low corner speed the car cannot fully clean the single tightest
- * FSG hairpin (~3.2 m radius).  At full steering lock the front tyre is already
- * past its Pacejka grip peak (~12 deg slip), so it understeers there regardless
- * of speed — a genuine limit of THIS car's grip + steering geometry, not a
- * tuning error.
- *
- * Wrapped in #ifndef so the parameter sweep can override it (-DMAX_LATERAL_ACCEL_MS2=8.0f). */
-#ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2   3.7f   /* corner speed limit, m/s^2        */
-#endif
-#define MAX_BRAKE_DECEL_MS2     6.0f   /* braking look-ahead decel, m/s^2  */
-#define SPEED_PLAN_HORIZON_M   80.0f   /* scan horizon for corners, metres */
-#define SPEED_PLAN_STEPS        40     /* max waypoints to include in scan */
-
-
-/* ---- Throttle / brake controller ---- */
-/*
- * All torque constants below are MOTOR torque (Nm at the motor shaft).
- * The whole signal chain stays in motor torque: the driver demand, the ECU's
- * per-wheel WheelTorques outputs, and the motor clamps are all motor torque.
- * The gear ratio (GEAR_RATIO = 15.47) is applied once, inside the VEHICLE MODEL,
- * when it turns motor torque into wheel force (Fx = GEAR_RATIO * t / r).  The
- * ECU must NOT pre-multiply by the gear ratio -- that double-counts it and
- * saturates every motor at its clamp.
- *
- * BRAKE_KP_NM is deliberately high so the car actually follows the planned
- * deceleration into a corner (a soft gain under-brakes and arrives too fast).
- * LAT_GRIP_REF_MS2 is the traction-circle reference: throttle is scaled by
- * sqrt(1 - (ay/ref)^2) so it backs off while the car is loaded laterally and
- * only powers up as the corner opens (ay -> 0).  It is set BELOW the car's true
- * ~13 m/s^2 peak so the cut bites during normal cornering -- using the true peak
- * left ~90% of throttle flowing mid-corner, which powered the car wide on exit
- * (power understeer).  Lower it to defer throttle more; raise it for earlier
- * power-down.
- */
-#define DRIVER_TORQUE_NM   117.6f   /* max throttle motor torque, Nm (4 x 29.4 Nm) */
-#define SPEED_KP_NM          800.0f /* throttle P-gain, Nm/(m/s).  Sized so a
-                                      * typical corner-exit speed deficit
-                                      * (~12 m/s below target) commands most of
-                                      * the available motor torque, pushing the
-                                      * loaded wheel toward its 29 Nm cap as the
-                                      * corner opens and the grip budget frees up. */
-#define DRAG_FF_NM           0.259f /* drag feedforward, Nm/(m/s)         */
-#define DRIVER_BRAKE_NM    -38.8f   /* max regen braking motor torque, Nm */
-#define BRAKE_KP_NM         16.2f   /* brake P-gain, Nm/(m/s)             */
-#define LAT_GRIP_REF_MS2     8.0f   /* traction-circle reference, m/s^2 (below true peak; see above) */
-
-/*
- * Throttle INTEGRAL term (anti-windup).  Pure-P throttle leaves a steady-state
- * speed deficit — most visibly on corner exit, where the car tracks a metre or
- * two per second below the planner's target.  A small integral on the throttle
- * speed error trims that residual out.
- *
- * Anti-windup is essential here because the throttle is multiplicatively cut by
- * the traction circle and the steering-saturation fade: while either cut is
- * active (or the output is clamped) the car is GRIP-limited, not throttle-
- * limited, so integrating the error then would wind the term up through every
- * corner and dump it on exit — the opposite of what we want.  The integrator is
- * therefore only advanced when the throttle is actually free to respond (not
- * clamped, cuts inactive), and it is reset whenever the controller switches to
- * braking so a stale charge cannot carry across.
- *
- * SPEED_KI_NM is deliberately small relative to SPEED_KP_NM (the P-gain already
- * does the heavy lifting); the integral only mops up the steady-state offset.
- * SPEED_I_MAX_NM bounds the accumulated contribution well below the motor cap so
- * it can never dominate the command.  At Ki=5 the lap eval improves ~0.17 s with
- * off-track ticks unchanged at 4 (Ki=0 reproduces the pure-P baseline exactly);
- * higher Ki keeps shaving lap time but slowly raises mean cross-track error, so
- * 5 is the knee of that trade-off.  Wrapped in #ifndef so the sweep can override. */
-#ifndef SPEED_KI_NM
-#define SPEED_KI_NM          400.0f /* throttle I-gain, Nm/(m/s·s)        */
-#endif
-#ifndef SPEED_I_MAX_NM
-#define SPEED_I_MAX_NM      250.0f  /* clamp on the integral contribution, Nm */
-#endif
-
-
-/* ---- Cone boundary avoidance (safety net) ---- */
-#define BOUNDARY_WARN_M      1.0f   /* steer correction starts this far from a cone  */
-#define BOUNDARY_CORR_GAIN   0.30f  /* max boundary steering correction, rad         */
-#define BOUNDARY_SLOW_M      1.0f   /* speed reduction starts this far from a cone   */
-#define BOUNDARY_SLOW_FACTOR 0.6f   /* speed floor multiplier at the cone face       */
-
-
-/*
- * Run one motion-control tick.
- * Writes state->steering and returns the driver torque demand.
- *
- * out_target_speed -- if non-NULL, receives the planner's commanded target
- *                     speed (m/s) for this tick.  Telemetry only; pass NULL if
- *                     not needed.
+ * Run one motion-control tick. Writes state->steering and returns the driver
+ * torque demand. out_target_speed, if non-NULL, receives the planner's target
+ * speed for this tick (telemetry only).
  */
 float motion_control_update(VehicleState *state, const Track *track,
                             float *out_target_speed);

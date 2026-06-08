@@ -10,10 +10,10 @@ See tool_eval_common.py for the RESULT line format and field list.
 
 Usage:
     # delta vs a base result
-    tool_compare_eval.py --current cur.txt --base base.txt
+    compare_eval.py --current cur.txt --base base.txt
 
-    # current only (no base available — first run / new branch)
-    tool_compare_eval.py --current cur.txt
+    # current only (no base available - first run / new branch)
+    compare_eval.py --current cur.txt
 
 Each input may be a file (containing the full evaluator output) or a literal
 "RESULT ..." string.
@@ -25,7 +25,7 @@ found (lap time worse than --lap-tol, or more off-track ticks than base).
 import argparse
 import sys
 
-from tool_eval_common import FIELDS, COUNT_KEYS, parse_result
+from eval_common import FIELDS, COUNT_KEYS, parse_result
 
 # The table uses Unicode (Δ, ✅, ⚠️). Windows' default console encoding (cp1252)
 # cannot encode these; force UTF-8 so the script works locally as well as in CI.

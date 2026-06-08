@@ -3,7 +3,6 @@
 
 static const float PI = 3.14159265358979323846f;
 
-
 /* ---- Helpers ---- */
 
 static float menger_curvature(float ax, float ay,
@@ -45,41 +44,25 @@ static float wrap_pi(float a)
 /* ---- Two-pass speed planner ---- */
 
 /*
- * Build v_limit[i] for each of the next SPEED_PLAN_STEPS waypoints from
- * curvature, then back-propagate braking constraints from furthest to
- * nearest.  A final step applies the braking distance from the car's current
- * position to the first upcoming waypoint.
- *
- * start_idx is the controller's progress index (the segment the car is
- * currently on), NOT track->current_index.
+ * Set a speed cap per upcoming waypoint from curvature, then back-propagate
+ * braking limits. start_idx is the controller's progress index.
  */
 static float plan_target_speed(const VehicleState *state, const Track *track,
                                int start_idx)
 {
     float v_limit[SPEED_PLAN_STEPS];
-    float seg_len[SPEED_PLAN_STEPS];  /* seg_len[i] = distance from point i to point i+1 */
+    float seg_len[SPEED_PLAN_STEPS];  /* distance from point i to i+1 */
     int   count = track->count;
     int   n     = 0;
     float path_s = 0.0f;
     int   i;
 
-    /*
-     * Forward pass.  v_limit[i] is the speed cap from the curvature AT the
-     * (start_idx + i)-th waypoint — including start_idx itself, so the cap of
-     * the corner the car is currently in is never skipped.
-     */
+    /* Forward pass: speed cap from curvature at each upcoming waypoint. */
     for (i = 0; i < SPEED_PLAN_STEPS; i++) {
         int ccur  = (start_idx + i    ) % count;
 
-        /*
-         * Curvature at this point, taken as the MAX over several stencil
-         * spacings (±1, ±2, ±3 waypoints).  A single ±1 stencil on ~2.5 m
-         * spacing under-reads a sharp hairpin apex (three closely spaced points
-         * look almost straight), letting the planner carry too much speed into
-         * the corner so the car understeers wide.  Sampling wider baselines and
-         * keeping the worst case captures the true apex sharpness without
-         * over-slowing gentle corners.
-         */
+        /* Curvature here, taken as the max over several stencil spacings so a
+         * sharp apex is not under-read. */
         float kappa = 0.0f;
         for (int d = 1; d <= 3; d++) {
             int cprev = (start_idx + i - d + count) % count;
@@ -108,7 +91,7 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
 
     if (n == 0) return TARGET_SPEED_MS;
 
-    /* --- Backward pass: propagate braking from furthest waypoint --- */
+    /* Backward pass: propagate braking from furthest waypoint. */
     float v_sweep = v_limit[n - 1];
     for (i = n - 2; i >= 0; i--) {
         float v_can_arrive = sqrtf(v_sweep*v_sweep
@@ -116,7 +99,7 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
         v_sweep = (v_limit[i] < v_can_arrive) ? v_limit[i] : v_can_arrive;
     }
 
-    /* --- Final step: from car position to the first upcoming waypoint --- */
+    /* Final step: braking from the car to the first upcoming waypoint. */
     {
         int   wp0   = start_idx % count;
         float ddx   = track->points[wp0].x - state->x;
@@ -133,11 +116,9 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
 /* ---- Nearest-segment finder ---- */
 
 /*
- * Find the racing-line segment nearest to (px, py) within a window around
- * center_idx.  Returns the index of the segment's start waypoint and writes
- * the clamped projection parameter t in [0,1] to *out_t.  Also writes the
- * signed cross-track error (perpendicular distance, +ve when the point is to
- * the RIGHT of the path direction) to *out_cte if non-NULL.
+ * Find the racing-line segment nearest to (px, py) near center_idx. Returns the
+ * segment's start index, writes the clamped projection t in [0,1] to *out_t and
+ * the signed cross-track error (+ve when right of the path) to *out_cte.
  */
 static int find_nearest_segment(const Track *track, float px, float py,
                                 int center_idx, float *out_t, float *out_cte)
@@ -172,7 +153,7 @@ static int find_nearest_segment(const Track *track, float px, float py,
             best_d2 = d2;
             best    = i0;
             best_t  = t;
-            /* signed CTE: +ve when (px,py) is right of the segment direction */
+            /* signed CTE: +ve when right of the segment direction */
             float inv = 1.0f / sqrtf(len2);
             best_cte  = (dx * (-ey) + dy * ex) * inv * -1.0f;
         }
@@ -185,11 +166,8 @@ static int find_nearest_segment(const Track *track, float px, float py,
 
 
 /*
- * Path curvature in the look-ahead region: the MAX Menger curvature over the
- * waypoints roughly within `span` metres ahead of start_idx.  Uses the same
- * multi-spacing stencil as the speed planner so a sharp apex three closely
- * spaced points wide is not under-read.  Track-agnostic: it measures the
- * geometry of whatever line is loaded, in 1/m.
+ * Max curvature (1/m) over the waypoints within `span` metres ahead of
+ * start_idx. Uses the same multi-spacing stencil as the speed planner.
  */
 static float lookahead_curvature(const Track *track, int start_idx, float span)
 {
@@ -222,11 +200,8 @@ static float lookahead_curvature(const Track *track, int start_idx, float span)
 /* ---- Pure Pursuit look-ahead point finder ---- */
 
 /*
- * Walk the racing line forward from (start_idx) accumulating arc length until at
- * least Ld metres past the car's projection, then return the point that far
- * ahead.  Writes the look-ahead point to (*lx,*ly).  Uses the path geometry
- * directly so the target sits on the line regardless of how far the car has
- * been pushed off it.
+ * Walk the racing line forward from start_idx until Ld metres of arc length,
+ * then write that point to (*lx,*ly). Stays on the line wherever the car is.
  */
 static void lookahead_point(const Track *track, int start_idx,
                             float Ld, float *lx, float *ly)
@@ -249,7 +224,7 @@ static void lookahead_point(const Track *track, int start_idx,
         }
         acc += seg;
     }
-    /* Fallback (degenerate track): aim at the start waypoint. */
+    /* Fallback: aim at the start waypoint. */
     *lx = track->points[start_idx % count].x;
     *ly = track->points[start_idx % count].y;
 }
@@ -258,10 +233,8 @@ static void lookahead_point(const Track *track, int start_idx,
 /* ---- Boundary steering correction (safety net) ---- */
 
 /*
- * Returns a signed steering correction that nudges the car away from whichever
- * cone boundary it is approaching:
- *   positive  -> steer toward +heading-normal (away from left/blue cones)
- *   negative  -> steer the other way (away from right/yellow cones)
+ * Signed steering nudge away from whichever cone boundary the car nears:
+ * positive steers away from left cones, negative away from right cones.
  */
 static float boundary_steer_correction(float x, float y, const Track *track)
 {
@@ -285,31 +258,20 @@ static float boundary_steer_correction(float x, float y, const Track *track)
 float motion_control_update(VehicleState *state, const Track *track,
                             float *out_target_speed)
 {
-    /*
-     * The controller tracks its own progress index along the racing line with
-     * continuity, independent of track->current_index (which can jump ahead
-     * when the car slides wide and would otherwise make the planner skip a
-     * corner).  Persists between ticks; the simulation drives one car.
-     */
+    /* Own progress index along the line, independent of track->current_index
+     * (which can jump ahead when the car slides wide and skip a corner). */
     static int   s_path_idx       = -1;
-    static float s_speed_integral = 0.0f;   /* throttle integral state, Nm (see header) */
+    static float s_speed_integral = 0.0f;   /* throttle integral state, Nm */
 
     int   count = track->count;
     float vx    = state->velocity;
 
     if (s_path_idx < 0 || s_path_idx >= count) s_path_idx = track->current_index;
 
-    /* ------------------------------------------------------------------ */
-    /* STEERING — Pure Pursuit (geometric look-ahead) + cone safety net     */
-    /* ------------------------------------------------------------------ */
+    /* STEERING: Pure Pursuit (geometric look-ahead) + cone safety net. */
 
-    /*
-     * Pure Pursuit references the REAR axle: it finds a target point on the
-     * racing line a look-ahead distance ahead and computes the single-arc steer
-     * that drives the rear axle through it.  We still project the FRONT axle to
-     * advance the progress index and to read the signed cross-track error for a
-     * small restoring trim.
-     */
+    /* Pure Pursuit steers the rear axle through a look-ahead point. The front
+     * axle is projected to advance the progress index and read the CTE trim. */
     float ra_x = state->x - CG_TO_REAR_M * cosf(state->heading);
     float ra_y = state->y - CG_TO_REAR_M * sinf(state->heading);
     float fa_x = state->x + CG_TO_FRONT_M * cosf(state->heading);
@@ -318,34 +280,15 @@ float motion_control_update(VehicleState *state, const Track *track,
     float t, cte;
     int   i0 = find_nearest_segment(track, fa_x, fa_y, s_path_idx, &t, &cte);
 
-    /* Advance the controller's progress index with continuity */
     s_path_idx = i0;
 
-    /* Speed-adaptive look-ahead: short in slow corners (commit to the apex),
-     * long at speed (smooth, stable line). */
+    /* Speed-adaptive look-ahead: short in slow corners, long at speed. */
     float Ld = K_LOOKAHEAD * vx;
     if (Ld < LOOKAHEAD_MIN_M) Ld = LOOKAHEAD_MIN_M;
     if (Ld > LOOKAHEAD_MAX_M) Ld = LOOKAHEAD_MAX_M;
 
-    /*
-     * Curvature-aware look-ahead floor: speed-adaptive Ld alone still chords
-     * across a SUSTAINED tight corner.  In a hairpin the car is slow, so Ld
-     * sits at the fixed floor LOOKAHEAD_MIN_M (2.8 m) — but on a ~2.5 m
-     * waypoint grid that floor still aims roughly one waypoint past the car,
-     * cutting the apex.  Pure Pursuit then computes the arc for a gentler curve
-     * than the real path, perpetually under-steers, and cross-track error
-     * integrates outward even at low speed (the wp83->85 wash-out).
-     *
-     * The fix ties the look-ahead floor to the corner RADIUS rather than a
-     * fixed distance: a tighter corner gets a proportionally shorter floor so
-     * the look-ahead point lands near the apex on the true radius.  Using
-     * Ld_min = K_LD_RADIUS / kappa = K_LD_RADIUS * R makes the chord subtend a
-     * fixed fraction of the turn regardless of corner size — the very property
-     * that makes it track-agnostic: a 3 m hairpin and a 30 m sweeper get
-     * geometrically similar (not absolutely equal) look-ahead, with no
-     * per-track tuning.  Clamped below by LOOKAHEAD_ABS_MIN so it can't collapse
-     * to zero on a near-hairpin, and it only ever LOWERS the floor (never raises
-     * Ld), so straights and fast corners are unchanged. */
+    /* Curvature-aware look-ahead floor: tie the floor to corner radius so the
+     * look-ahead point lands near the apex in tight corners. Only lowers Ld. */
     {
         float kappa_ahead = lookahead_curvature(track, i0, Ld);
         if (kappa_ahead > 1e-4f) {
@@ -358,8 +301,7 @@ float motion_control_update(VehicleState *state, const Track *track,
     float lx, ly;
     lookahead_point(track, i0, Ld, &lx, &ly);
 
-    /* alpha = angle from the car heading to the look-ahead point, measured at
-     * the rear axle.  delta = atan2(2 L sin(alpha), Ld). */
+    /* alpha = angle from car heading to the look-ahead point at the rear axle. */
     float dx_l    = lx - ra_x;
     float dy_l    = ly - ra_y;
     float Ld_act  = sqrtf(dx_l*dx_l + dy_l*dy_l);
@@ -367,23 +309,19 @@ float motion_control_update(VehicleState *state, const Track *track,
     float alpha   = wrap_pi(atan2f(dy_l, dx_l) - state->heading);
     float steer_pp = atan2f(2.0f * WHEELBASE_M * sinf(alpha), Ld_act);
 
-    /* Cross-track restoring trim: Pure Pursuit alone has no term that pulls the
-     * car back onto the line once it and the look-ahead point share an offset;
-     * add a small proportional pull.  cte > 0 => car is right of the line =>
-     * steer left (+). */
+    /* Cross-track restoring trim: small proportional pull back onto the line.
+     * cte > 0 (right of line) steers left (+). */
     float steer = steer_pp + K_CTE_PP * cte;
 
-    /* Gentle cone repulsion as a safety net */
+    /* Gentle cone repulsion as a safety net. */
     steer += boundary_steer_correction(state->x, state->y, track);
 
     if (steer >  MAX_STEER_RAD) steer =  MAX_STEER_RAD;
     if (steer < -MAX_STEER_RAD) steer = -MAX_STEER_RAD;
 
-    /* Slew-rate limit: a driver / steering actuator cannot snap the wheel
-     * instantly, so cap how far the commanded angle may move in one tick.
-     * state->steering still holds last tick's command. */
+    /* Slew-rate limit: cap how far the commanded angle moves in one tick. */
     {
-        float max_step = MAX_STEER_RATE_RADS * MC_DT_S;
+        float max_step = MAX_STEER_RATE_RADS * CONTROL_DT_S;
         float dsteer   = steer - state->steering;
         if (dsteer >  max_step) steer = state->steering + max_step;
         if (dsteer < -max_step) steer = state->steering - max_step;
@@ -391,9 +329,7 @@ float motion_control_update(VehicleState *state, const Track *track,
 
     state->steering = steer;
 
-    /* ------------------------------------------------------------------ */
-    /* SPEED — two-pass planner + boundary proximity reduction              */
-    /* ------------------------------------------------------------------ */
+    /* SPEED: two-pass planner + boundary proximity reduction. */
 
     float target_speed = plan_target_speed(state, track, s_path_idx);
 
@@ -409,9 +345,7 @@ float motion_control_update(VehicleState *state, const Track *track,
         target_speed = speed_floor + blend * (target_speed - speed_floor);
     }
 
-    /* ------------------------------------------------------------------ */
-    /* TORQUE — P-throttle + drag feedforward; P-brake                     */
-    /* ------------------------------------------------------------------ */
+    /* TORQUE: P-throttle + drag feedforward; P-brake. */
 
     if (out_target_speed) *out_target_speed = target_speed;
 
@@ -419,20 +353,14 @@ float motion_control_update(VehicleState *state, const Track *track,
     float driver_torque;
 
     if (speed_error >= 0.0f) {
-        /* Traction circle: cut throttle in proportion to lateral grip already
-         * in use, so the car only powers up as the corner opens (ay -> 0).
-         * Use the roll-lagged ay_filt, not the raw same-tick ay: the latter
-         * carries single-tick noise that would chop the throttle 0<->max. */
+        /* Traction circle: cut throttle by the lateral grip already in use, so
+         * the car powers up only as the corner opens. Uses lagged ay_filt. */
         float lat_ratio = fabsf(state->ay_filt) / LAT_GRIP_REF_MS2;
         if (lat_ratio > 1.0f) lat_ratio = 1.0f;
         float grip_factor = sqrtf(1.0f - lat_ratio * lat_ratio);
 
-        /* Steering-saturation cut: when the wheel is near full lock the front
-         * tyres are already spending their whole grip budget turning, so any
-         * throttle just powers the car wide (this was the mid-hairpin "pinned
-         * at full lock and accelerating" failure of the old controller).  Fade
-         * throttle from full at STEER_SAT_FRAC of the limit to zero at the
-         * limit. */
+        /* Steering-saturation cut: near full lock the front tyres spend their
+         * grip turning, so fade throttle from STEER_SAT_FRAC of lock to zero. */
         float steer_factor = 1.0f;
         float steer_frac   = fabsf(state->steering) / MAX_STEER_RAD;
         if (steer_frac > STEER_SAT_FRAC) {
@@ -441,32 +369,26 @@ float motion_control_update(VehicleState *state, const Track *track,
             steer_factor = 1.0f - over;
         }
 
-        /* Integral anti-windup: only advance the integrator when the throttle is
-         * actually free to respond — i.e. neither cut is meaningfully active and
-         * the P-term alone is not already saturating the motor cap.  While a cut
-         * is active the car is grip-limited, not throttle-limited, so integrating
-         * the error then would just wind the term up through the corner. */
+        /* Anti-windup: only advance the integrator when throttle is free to
+         * respond (no cut active and P-term below the motor cap). */
         float p_term      = DRAG_FF_NM * vx + SPEED_KP_NM * speed_error;
         int   cuts_active = (grip_factor < 0.99f) || (steer_factor < 0.99f);
         if (!cuts_active && p_term < DRIVER_TORQUE_NM) {
-            s_speed_integral += SPEED_KI_NM * speed_error * MC_DT_S;
+            s_speed_integral += SPEED_KI_NM * speed_error * CONTROL_DT_S;
             if (s_speed_integral >  SPEED_I_MAX_NM) s_speed_integral =  SPEED_I_MAX_NM;
             if (s_speed_integral <  0.0f)           s_speed_integral =  0.0f;
         }
 
         driver_torque = p_term + s_speed_integral;
 
-        /* Apply both grip-limit cuts to the full demand (P + I): if the car is
-         * grip-limited the integral contribution must back off too. */
+        /* Apply both cuts to the full demand (P + I). */
         driver_torque *= grip_factor;
         driver_torque *= steer_factor;
 
         if (driver_torque < 0.0f)             driver_torque = 0.0f;
         if (driver_torque > DRIVER_TORQUE_NM) driver_torque = DRIVER_TORQUE_NM;
     } else {
-        /* Braking is pure-P.  Reset the throttle integrator so a charge built up
-         * before the corner cannot carry across the braking phase and dump onto
-         * the next corner exit. */
+        /* Braking is pure-P. Reset the throttle integrator. */
         s_speed_integral = 0.0f;
 
         driver_torque = BRAKE_KP_NM * speed_error;

@@ -4,17 +4,11 @@
 /*
  * track.h
  *
- * The track is the FSG 2024 Formula Student Germany endurance layout, defined
- * by 228 measured boundary cone positions (117 left/blue, 111 right/yellow).
- *
- * track_init() stores the raw cone arrays and calls path_plan() to build the
- * racing-line waypoints from them.  The waypoints in track->points[] are the
- * output of the minimum-curvature optimiser in path_planning.c — they are NOT
- * the cone positions.
- *
- * The visualiser draws both the cone positions (track->left_cones /
- * track->right_cones) and the racing-line waypoints (track->points).
- * The motion controller uses track->points for Stanley path tracking.
+ * The FSG 2024 endurance layout, defined by 228 measured boundary cones
+ * (117 left, 111 right). track_init() stores the cones and calls path_plan()
+ * to build the racing-line waypoints in track->points[] (these are the
+ * optimised line, not the cone positions). The motion controller follows
+ * track->points; the visualiser draws both the cones and the line.
  */
 
 
@@ -54,25 +48,9 @@ typedef struct {
 void track_init(Track *track);
 
 /*
- * Check if the car has reached the current waypoint. If it has, advance to
- * the next one and update the lap counter.
- *
- * car_x, car_y -- the car's current world position
+ * Check if the car has reached the current waypoint. If it has, advance to the
+ * next one and update the lap counter.
  */
 void track_update(Track *track, float car_x, float car_y);
-
-/*
- * Return the waypoint the car should be aiming at right now.
- * Used by the motion controller for coarse progress tracking.
- */
-TrackPoint track_get_target(const Track *track);
-
-/*
- * The world bounding box of the track — used by the visualiser to set up the
- * coordinate scale. All waypoints and cones fit inside this box.
- */
-void track_get_bounds(const Track *track,
-                      float *min_x, float *max_x,
-                      float *min_y, float *max_y);
 
 #endif /* TRACK_H */

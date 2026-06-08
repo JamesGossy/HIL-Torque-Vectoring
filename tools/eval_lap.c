@@ -1,26 +1,10 @@
 /*
- * tests/tool_eval_lap.c
+ * tools/eval_lap.c
  *
- * Headless lap-evaluation harness (NOT a unit test — a diagnostic tool).
- *
- * Runs the exact same per-tick loop as main.c (motion control -> ECU ->
- * vehicle model -> track) but as fast as possible (no real-time sleep), and
- * measures how well the car tracks the racing line. It reports, for the whole
- * run and broken down per "sharp corner":
- *
- *   - cross-track error (distance from car CG to nearest racing-line point)
- *   - corridor violations (car outside the cone boundary)
- *   - lap time and whether a full lap completed
- *
- * This is what lets us see, objectively, that the car "slips wide on sharp
- * corners and runs super wide" — and whether a fix actually helps.
- *
- * Build (from repo root):
- *   gcc -std=c11 -O2 -I HIL_Firmware/include -I shared -I ECU_Firmware/include \
- *       -o HIL_Firmware/build/eval_lap tests/tool_eval_lap.c \
- *       HIL_Firmware/src/motion_control.c HIL_Firmware/src/vehicle_model.c \
- *       HIL_Firmware/src/track.c HIL_Firmware/src/path_planning.c \
- *       ECU_Firmware/src/torque_vectoring.c -lm
+ * Headless lap evaluator (a diagnostic tool, not a unit test). Runs the same
+ * per-tick loop as main.c as fast as possible and measures how well the car
+ * tracks the racing line: cross-track error, cone contacts, lap time. Prints a
+ * machine-readable RESULT line for sweeps and CI. Build it with `make eval`.
  */
 
 #include <stdio.h>
@@ -37,7 +21,7 @@
 #define DT 0.01f
 
 /* nearest distance from (x,y) to the racing-line polyline (point cloud is fine
- * at 2.5 m spacing — we measure to the nearest waypoint segment). */
+ * at 2.5 m spacing - we measure to the nearest waypoint segment). */
 static float dist_to_line(const Track *t, float x, float y, int *near_idx)
 {
     float best = 1e18f; int bi = 0;
@@ -66,7 +50,7 @@ static float dist_to_line(const Track *t, float x, float y, int *near_idx)
  * cones (the min-curvature line hugs them with only a 0.15 corridor margin), so
  * a perfectly tracked lap legitimately runs that close.  The clearance is set
  * BELOW that (0.25 m) so the metric flags only when the car is further out than
- * the racing line itself ever is — i.e. it genuinely ran wide onto a cone, not
+ * the racing line itself ever is - i.e. it genuinely ran wide onto a cone, not
  * merely clipped an apex the line was always going to graze. */
 #define CONE_CLEARANCE_M 0.25f
 static int off_track(const Track *t, float x, float y)
@@ -150,28 +134,7 @@ int main(void)
         if (is_sharp && cte > worst_cte_sharp) worst_cte_sharp = cte;
         if (is_sharp && cte > 2.0f) sharp_violations++;
 
-        if (off_track(&track, state.x, state.y)) {
-            offtrack_ticks++;
-#ifdef CLIP_DIAG
-            {
-                int bi = -1; float bd = 1e18f; const char *side = "?";
-                for (int z = 0; z < track.left_count; z++) {
-                    float ex = track.left_cones[z].x - state.x;
-                    float ey = track.left_cones[z].y - state.y;
-                    float d = ex*ex + ey*ey;
-                    if (d < bd) { bd = d; bi = z; side = "L"; }
-                }
-                for (int z = 0; z < track.right_count; z++) {
-                    float ex = track.right_cones[z].x - state.x;
-                    float ey = track.right_cones[z].y - state.y;
-                    float d = ex*ex + ey*ey;
-                    if (d < bd) { bd = d; bi = z; side = "R"; }
-                }
-                fprintf(stderr, "CLIP t=%.2f wp=%d cone=%s%d dist=%.2f v=%.1f kappa=%.3f\n",
-                        tick*DT, ni, side, bi, sqrtf(bd), state.velocity, kappa[ni]);
-            }
-#endif
-        }
+        if (off_track(&track, state.x, state.y)) offtrack_ticks++;
 
         if (trace && (tick % 10 == 0))
             printf("t=%5.2f wp=%3d kappa=%.3f cte=%.2f v=%4.1f vtgt=%4.1f steer=%+.3f beta=%+.3f\n",
@@ -212,6 +175,6 @@ int main(void)
            lap_done_tick > 0 ? lap_done_tick * DT : -1.0f);
 
     free(kappa);
-    /* exit 0 always — this is a diagnostic, judged by its printed numbers */
+    /* exit 0 always - this is a diagnostic, judged by its printed numbers */
     return 0;
 }
