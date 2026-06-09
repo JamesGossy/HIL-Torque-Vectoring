@@ -85,7 +85,7 @@ static void extract_gates(int n_left, int n_right)
  * clear cones by more than the off-track threshold plus its own cross-track
  * error. */
 #ifndef RACING_MARGIN
-#define RACING_MARGIN 0.2447f
+#define RACING_MARGIN 0.2587f
 #endif
 #define OPT_PASSES 400
 
@@ -236,7 +236,7 @@ static void compute_normals(void)
  * if you deliberately want to shape a more/less aggressive line than the car
  * drives; always confirm 0 off-track with `make eval`. */
 #ifndef PP_GRIP_ACCEL
-#define PP_GRIP_ACCEL 10.0763f
+#define PP_GRIP_ACCEL 10.0000f
 #endif
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
@@ -266,7 +266,7 @@ static void compute_normals(void)
  * lap_time() charges a steep penalty for any segment tighter than this floor, so
  * the optimiser never draws an un-holdable apex. */
 #ifndef PP_MIN_RADIUS_M
-#define PP_MIN_RADIUS_M 6.0342f
+#define PP_MIN_RADIUS_M 6.0329f
 #endif
 /* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
  * floor. Large enough to dominate any real time gain a too-tight apex could
@@ -308,8 +308,28 @@ static float line_curvature(int i, int n)
 
 /* Scratch buffers for the lap-time evaluation (module-static to avoid large
  * stack frames; the solve is single-threaded and runs once). */
-static float lt_ds[MAX_WAYPOINTS]; /* segment length i -> i+1, m   */
-static float lt_v[MAX_WAYPOINTS];  /* speed profile at point i, m/s */
+static float lt_ds[MAX_WAYPOINTS]; /* segment length i -> i+1, m       */
+static float lt_v[MAX_WAYPOINTS];  /* speed profile at point i, m/s    */
+static float lt_k[MAX_WAYPOINTS];  /* line curvature at point i, 1/m   */
+
+/* Longitudinal accel available at speed v on a segment of curvature k, under the
+ * friction circle a_lat^2 + a_lon^2 <= gg(v)^2. The lateral grip already spent
+ * cornering (a_lat = v^2*k) eats the circle, so less is left to accelerate or
+ * brake - exactly the coupling the on-car planner uses (motion_control.c
+ * brake_decel_avail). a_cap bounds it by the powertrain limit (PP_ACCEL_LON for
+ * traction-out, PP_BRAKE_LON for braking); floored so the sweep always
+ * progresses. Passing the GG budget as speed-dependent (gg(v)) lets the fast
+ * corners brake/accelerate harder on their downforce, the whole point of #1. */
+static float lon_accel_avail(float v, float k, float a_cap)
+{
+    float gg     = lateral_grip_accel(GG_ACCEL_MS2, v);
+    float a_lat  = v * v * k;
+    float budget = gg * gg - a_lat * a_lat;
+    float a_lon  = (budget > 0.0f) ? sqrtf(budget) : 0.0f;
+    if (a_lon > a_cap) a_lon = a_cap;
+    if (a_lon < 0.5f) a_lon = 0.5f;
+    return a_lon;
+}
 
 /*
  * Lap time of the current offset line under a quasi-steady-state speed model.
@@ -318,6 +338,13 @@ static float lt_v[MAX_WAYPOINTS];  /* speed profile at point i, m/s */
  *   - apex cap:  v_i <= sqrt(PP_GRIP_ACCEL / kappa_i)  (lateral grip)
  *   - forward:   v_{i+1} <= sqrt(v_i^2 + 2 a_lon ds_i) (can't accelerate harder)
  *   - backward:  v_i     <= sqrt(v_{i+1}^2 + 2 a_brk ds_i) (must be able to brake)
+ * The forward and backward longitudinal budgets are taken under the FRICTION
+ * CIRCLE (lon_accel_avail): braking into a corner is limited by the lateral grip
+ * already in use, forcing an earlier, harder brake on the straight before a tight
+ * apex and rewarding a line that straightens the entry - this is the real
+ * combined-grip behaviour the on-car planner drives with, so the line is now
+ * scored against the same car model it is driven by (#1).
+ *
  * The forward+backward passes around the closed loop make the profile depend on
  * what FOLLOWS each corner - that is what rewards a late apex onto a straight.
  */
@@ -325,7 +352,8 @@ static float lap_time(int n)
 {
     int i, lap;
 
-    /* segment lengths + apex (lateral-grip) speed cap */
+    /* segment lengths + apex (lateral-grip) speed cap, and per-point curvature
+     * cached for the friction-circle longitudinal passes below. */
     for (i = 0; i < n; i++) {
         int j    = (i + 1) % n;
         float dx = rs_px(j) - rs_px(i);
@@ -338,35 +366,53 @@ static float lap_time(int n)
          * form. Shaping the line for the real (downforce-aware) grip is the point
          * of the optimiser - a gripless line gives away the fast corners. */
         float k = line_curvature(i, n);
+        lt_k[i] = k;
         lt_v[i] = apex_speed(PP_GRIP_ACCEL, k, PP_V_MAX);
     }
 
-    /* Forward (traction-out) and backward (braking) passes. Two laps of each
-     * around the closed loop so the limits propagate fully past the wrap. */
+    /* Forward (traction-out) and backward (braking) passes under the friction
+     * circle. Two laps of each around the closed loop so the limits propagate
+     * fully past the wrap. The longitudinal budget is evaluated at the segment's
+     * own speed and curvature, so a corner being entered fast brakes earlier. */
     for (lap = 0; lap < 2; lap++) {
         for (i = 0; i < n; i++) {
             int j       = (i + 1) % n;
-            float reach = sqrtf(lt_v[i] * lt_v[i] + 2.0f * PP_ACCEL_LON * lt_ds[i]);
+            float alon  = lon_accel_avail(lt_v[i], lt_k[i], PP_ACCEL_LON);
+            float reach = sqrtf(lt_v[i] * lt_v[i] + 2.0f * alon * lt_ds[i]);
             if (lt_v[j] > reach) lt_v[j] = reach;
         }
         for (i = n - 1; i >= 0; i--) {
             int j       = (i + 1) % n;
-            float reach = sqrtf(lt_v[j] * lt_v[j] + 2.0f * PP_BRAKE_LON * lt_ds[i]);
+            float abrk  = lon_accel_avail(lt_v[j], lt_k[j], PP_BRAKE_LON);
+            float reach = sqrtf(lt_v[j] * lt_v[j] + 2.0f * abrk * lt_ds[i]);
             if (lt_v[i] > reach) lt_v[i] = reach;
         }
     }
 
     /* T = Sum ds_i / v_avg over each segment, plus a feasibility penalty for any
-     * point whose radius is below PP_MIN_RADIUS_M (un-steerable for this car). */
-    const float k_floor = 1.0f / PP_MIN_RADIUS_M;
-    float t             = 0.0f;
+     * point whose radius is below the DYNAMICALLY holdable radius for this car.
+     *
+     * #2: the holdable radius shrinks with speed. The car's grip-limited minimum
+     * radius is r = v^2 / a_lat_max(v): at the apex speed the tyre can hold, a
+     * faster corner (more downforce) can hold a TIGHTER geometric radius. A flat
+     * PP_MIN_RADIUS_M floors every corner at the SLOW-corner (no-downforce) limit,
+     * needlessly opening the fast corners. We floor instead at the radius the car
+     * can actually hold at this point's planned speed, so fast corners may run
+     * tighter (carrying more apex speed) while the hairpin still gets its full
+     * PP_MIN_RADIUS_M opening (no downforce there). */
+    float t = 0.0f;
     for (i = 0; i < n; i++) {
         int j      = (i + 1) % n;
         float vavg = 0.5f * (lt_v[i] + lt_v[j]);
         if (vavg < 0.5f) vavg = 0.5f; /* guard near standstill */
         t += lt_ds[i] / vavg;
 
-        float k = line_curvature(i, n);
+        float k       = lt_k[i];
+        float r_hold  = PP_MIN_RADIUS_M; /* slow-corner (no downforce) floor */
+        float a_dyn   = lateral_grip_accel(PP_GRIP_ACCEL, lt_v[i]);
+        float r_speed = (a_dyn > 1e-3f) ? lt_v[i] * lt_v[i] / a_dyn : PP_MIN_RADIUS_M;
+        if (r_speed < r_hold) r_hold = r_speed; /* tighter allowed where downforce holds it */
+        float k_floor = 1.0f / r_hold;
         if (k > k_floor) t += PP_CURV_PENALTY * (k - k_floor);
     }
     return t;
