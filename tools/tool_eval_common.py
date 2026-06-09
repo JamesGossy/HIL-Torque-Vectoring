@@ -1,6 +1,6 @@
 """Shared helpers for the lap-evaluation tools.
 
-The headless evaluator (tools/eval_lap.c) prints one machine-readable line:
+The headless evaluator (tools/tool_eval_lap.c) prints one machine-readable line:
 
     RESULT mean_cte=.. worst_cte=.. worst_cte_sharp=.. sharp_viol=.. \
            offtrack=.. laps=.. lap_s=..

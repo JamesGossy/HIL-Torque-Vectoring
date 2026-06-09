@@ -12,12 +12,10 @@
  * into state->steering) and a driver torque demand (the return value, Nm;
  * positive is throttle, negative is regen braking).
  *
- * Steering is Pure Pursuit: it aims at a point on the racing line a look-ahead
- * distance ahead of the rear axle and computes the single-arc steer angle that
- * drives the rear axle through it. A short look-ahead at low speed commits the
- * car to a tight apex; a longer one at speed keeps the line smooth. A small
- * cross-track trim pulls the car back when it drifts off the line, and a cone
- * repulsion term is a safety net near the boundary.
+ * Steering is a model-based LQR law (see lqr_steer.h): the front axle is
+ * projected onto the racing line to read the cross-track and heading error, and
+ * an optimal feedback law on the dynamic-bicycle error dynamics computes the
+ * steer command. A cone-repulsion term is a safety net near the boundary.
  *
  * Speed is a two-pass planner: a forward pass caps each waypoint's speed from
  * its curvature, then a backward pass propagates braking from the furthest

@@ -74,8 +74,14 @@ static void extract_gates(int n_left, int n_right)
 #define RESAMPLE_SPACING_M  2.5f   /* target waypoint spacing, metres        */
 
 /* RACING_MARGIN keeps the line this fraction of the half-width off each
- * boundary. Keep it modest so tight apexes are not over-constrained. */
-#define RACING_MARGIN  0.15f
+ * boundary. Keep it modest so tight apexes are not over-constrained, but it must
+ * leave enough clearance that the tracker - which now follows the line closely -
+ * does not ride the apex cones: a faithful tracker needs the line itself to
+ * clear cones by more than the off-track threshold plus its own cross-track
+ * error. */
+#ifndef RACING_MARGIN
+#define RACING_MARGIN  0.2756f
+#endif
 #define OPT_PASSES     400
 
 /* Centreline (one entry per gate, in order) */
@@ -218,7 +224,7 @@ static void compute_normals(void)
  * if you deliberately want to shape a more/less aggressive line than the car
  * drives; always confirm 0 off-track with `make eval`. */
 #ifndef PP_GRIP_ACCEL
-#define PP_GRIP_ACCEL     MAX_LATERAL_ACCEL_MS2
+#define PP_GRIP_ACCEL     13.6871f
 #endif
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
@@ -230,18 +236,25 @@ static void compute_normals(void)
 /* Top speed cap for the profile, m/s (matches the car's TARGET_SPEED_MS). */
 #define PP_V_MAX          30.0f
 
-/* Feasibility floor: the car's steering geometry gives a minimum turning radius
- * of ~3.8 m (MAX_STEER_RAD), so any line tighter than that is physically
- * un-followable - the tracker cannot steer hard enough and runs wide off the
- * line. The quasi-steady-state speed model on its own does NOT know this: it
- * just reads a very tight radius as a very low corner speed and is happy to
- * shave a few hundredths there, spiking the local curvature into a corner the
- * car cannot make. PP_MIN_RADIUS_M is a hard floor a little above the geometric
- * R_min (margin for the tracker); lap_time() charges a steep time penalty for
- * any segment tighter than it, so the optimiser never chooses an un-steerable
- * apex. This - not a high PP_GRIP_ACCEL - is what keeps the line followable. */
+/* Feasibility floor: the car's steering geometry gives a kinematic minimum
+ * turning radius of ~3.8 m (MAX_STEER_RAD), but the radius it can actually HOLD
+ * AT SPEED is larger - once the front tyre is loaded, understeer/slip mean too
+ * tight an apex needs more than full steering lock, so the car saturates at the
+ * stop, washes wide, and scrubs to a near-stall crawl at the hairpin. The floor
+ * must therefore be the DYNAMICALLY achievable radius, not the kinematic one.
+ *
+ * 6.26 m suits the LQR car at its high (~13.7 m/s^2) corner-speed budget: the
+ * tight LQR tracker loads the front hard at the apex, so the hairpin must be
+ * opened this far or the car saturates the steering and stalls there. Tune it
+ * with the budget; too low and the hairpin stalls, much higher and the line
+ * gives away time on the medium corners.
+ *
+ * The quasi-steady-state speed model does NOT know any of this on its own: it
+ * reads a tight radius as a low corner speed and happily spikes the curvature.
+ * lap_time() charges a steep penalty for any segment tighter than this floor, so
+ * the optimiser never draws an un-holdable apex. */
 #ifndef PP_MIN_RADIUS_M
-#define PP_MIN_RADIUS_M   4.5f
+#define PP_MIN_RADIUS_M   6.2565f
 #endif
 /* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
  * floor. Large enough to dominate any real time gain a too-tight apex could
