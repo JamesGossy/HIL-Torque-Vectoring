@@ -66,7 +66,7 @@
  * rises, or the car saturates the steering and stalls at the hairpin). Re-tune
  * them together and always confirm 0 off-track with `make eval`. */
 #ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2 10.9412f
+#define MAX_LATERAL_ACCEL_MS2 14.5000f
 #endif
 
 #define MAX_BRAKE_DECEL_MS2 5.6f /* max straight-line braking decel, m/s^2 */
@@ -90,7 +90,7 @@
  * apex drift); lowering it brakes ever earlier (smoother but slower). Confirm 0
  * off-track with `make eval` after changing it. */
 #ifndef GG_ACCEL_MS2
-#define GG_ACCEL_MS2 6.7782f
+#define GG_ACCEL_MS2 8.3568f
 #endif
 
 #define SPEED_PLAN_HORIZON_M 80.0f /* how far ahead to scan for corners, m */
@@ -131,7 +131,7 @@
  * on a track that is ~80% corners. Lowering it powers out more weakly (slower
  * exits); raising it powers wide off the line (off-track). */
 #ifndef LAT_GRIP_REF_MS2
-#define LAT_GRIP_REF_MS2 14.4066f
+#define LAT_GRIP_REF_MS2 15.8098f
 #endif
 
 /* Throttle integral, to trim the steady-state speed deficit on corner exit.
@@ -163,7 +163,7 @@
  * at runtime with [ and ]. Ki and Kd are fractions of it, so the loop scales
  * together when you change this. */
 #ifndef KP_YAW_DEFAULT
-#define KP_YAW_DEFAULT 48.4545f
+#define KP_YAW_DEFAULT 74.5481f
 #endif
 
 /* Integral and derivative gains, as a fraction of the master gain. I erases the
@@ -179,7 +179,7 @@
  * differential from the cornering demand so the yaw moment is there before any
  * error develops. */
 #ifndef TV_KFF
-#define TV_KFF 11.4068f
+#define TV_KFF 15.1371f
 #endif
 
 /* Cap on the bias the integral term alone can contribute, Nm. */

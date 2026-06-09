@@ -85,7 +85,7 @@ static void extract_gates(int n_left, int n_right)
  * clear cones by more than the off-track threshold plus its own cross-track
  * error. */
 #ifndef RACING_MARGIN
-#define RACING_MARGIN 0.3400f
+#define RACING_MARGIN 0.2725f
 #endif
 #define OPT_PASSES 400
 
@@ -236,7 +236,7 @@ static void compute_normals(void)
  * if you deliberately want to shape a more/less aggressive line than the car
  * drives; always confirm 0 off-track with `make eval`. */
 #ifndef PP_GRIP_ACCEL
-#define PP_GRIP_ACCEL 12.6186f
+#define PP_GRIP_ACCEL 10.0300f
 #endif
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
@@ -266,7 +266,7 @@ static void compute_normals(void)
  * lap_time() charges a steep penalty for any segment tighter than this floor, so
  * the optimiser never draws an un-holdable apex. */
 #ifndef PP_MIN_RADIUS_M
-#define PP_MIN_RADIUS_M 4.5000f
+#define PP_MIN_RADIUS_M 6.5000f
 #endif
 /* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
  * floor. Large enough to dominate any real time gain a too-tight apex could
