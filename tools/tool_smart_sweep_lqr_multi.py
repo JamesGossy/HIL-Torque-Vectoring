@@ -32,13 +32,18 @@ EXTRA_DEFS = []
 TRACKS = ["fsg2024", "fse2024"]
 
 # (name, low, high). Same high-leverage set as the single-track sweeper.
+# Ceilings on the grip-budget levers raised after a tyre/downforce-model probe
+# showed peak lateral accel is ~14.5 at the hairpin but 18-21+ in the fast
+# corners. The headroom is in USING the downforce (PLANNER_DOWNFORCE_FRAC up to
+# 1.0) and shaping the line for it (PP_GRIP_ACCEL), not in the low-speed base
+# (MAX_LATERAL_ACCEL_MS2, which the hairpin already pins).
 PARAMS = [
-    ("MAX_LATERAL_ACCEL_MS2", 10.0, 14.5),
-    ("PP_GRIP_ACCEL",         10.0, 14.5),
+    ("MAX_LATERAL_ACCEL_MS2", 12.0, 15.5),
+    ("PP_GRIP_ACCEL",         10.0, 18.0),
     ("RACING_MARGIN",          0.18, 0.34),
     ("PP_MIN_RADIUS_M",        4.5,  6.5),
-    ("GG_ACCEL_MS2",           6.0,  10.0),
-    ("PLANNER_DOWNFORCE_FRAC", 0.0,  0.6),
+    ("GG_ACCEL_MS2",           6.0,  13.0),
+    ("PLANNER_DOWNFORCE_FRAC", 0.2,  1.0),
     ("LQR_Q_E1",              10.0, 40.0),
     ("LQR_Q_E1D",              0.3,  3.0),
     ("LQR_Q_E2",               3.0, 16.0),
@@ -46,7 +51,7 @@ PARAMS = [
     ("LQR_R",                  2.0,  8.0),
     ("LQR_KI",                 2.0, 10.0),
     ("LQR_I_MAX",              0.3,  1.0),
-    ("LAT_GRIP_REF_MS2",      11.0, 16.0),
+    ("LAT_GRIP_REF_MS2",      11.0, 20.0),
     ("KP_YAW_DEFAULT",        40.0, 90.0),
     ("TV_KFF",                 6.0, 18.0),
     ("TV_REAR_SHARE",          0.45, 0.70),
@@ -55,15 +60,17 @@ NAMES = [p[0] for p in PARAMS]
 LO = {p[0]: p[1] for p in PARAMS}
 HI = {p[0]: p[2] for p in PARAMS}
 
-# Starting incumbent: the committed in-source defaults (clean on fsg2024).
+# Starting incumbent: the committed in-source defaults (the grip-aware
+# distributor's tuned set: fsg2024 ~25.1s, fse2024 ~18.7s, both clean and
+# robust to +/-3%; mean CTE ~0.14/0.20).
 DEFAULTS = {
-    "MAX_LATERAL_ACCEL_MS2": 10.9412, "PP_GRIP_ACCEL": 12.6186,
-    "RACING_MARGIN": 0.3400, "PP_MIN_RADIUS_M": 4.5000, "GG_ACCEL_MS2": 6.7782,
-    "PLANNER_DOWNFORCE_FRAC": 0.5586,
-    "LQR_Q_E1": 10.0000, "LQR_Q_E1D": 3.0000, "LQR_Q_E2": 8.8178,
-    "LQR_Q_E2D": 0.3601, "LQR_R": 8.0000, "LQR_KI": 2.5444, "LQR_I_MAX": 0.7178,
-    "LAT_GRIP_REF_MS2": 14.4066, "KP_YAW_DEFAULT": 48.4545, "TV_KFF": 11.4068,
-    "TV_REAR_SHARE": 0.6122,
+    "MAX_LATERAL_ACCEL_MS2": 13.0616, "PP_GRIP_ACCEL": 10.0763,
+    "RACING_MARGIN": 0.2447, "PP_MIN_RADIUS_M": 6.0342, "GG_ACCEL_MS2": 10.0378,
+    "PLANNER_DOWNFORCE_FRAC": 0.5713,
+    "LQR_Q_E1": 19.1248, "LQR_Q_E1D": 3.0000, "LQR_Q_E2": 14.0363,
+    "LQR_Q_E2D": 1.0000, "LQR_R": 7.8091, "LQR_KI": 9.7494, "LQR_I_MAX": 0.3000,
+    "LAT_GRIP_REF_MS2": 13.7021, "KP_YAW_DEFAULT": 40.0000, "TV_KFF": 10.1116,
+    "TV_REAR_SHARE": 0.6516,
 }
 
 ROBUST_PCT = 0.03
