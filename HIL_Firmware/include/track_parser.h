@@ -33,32 +33,32 @@ typedef struct {
 #define MAX_CONES 150
 
 /* How close the car needs to get to a waypoint before we advance to the next one, metres. */
-#define WAYPOINT_CAPTURE_RADIUS_M  2.0f
+#define WAYPOINT_CAPTURE_RADIUS_M 2.0f
 
 
 /* One named cone layout. The cone arrays are generated into track_data.h from
  * the track YAML; track_parser.c selects one of these by name. */
 typedef struct {
-    const char  *name;
+    const char *name;
     const float (*left)[2];
-    int          left_count;
+    int left_count;
     const float (*right)[2];
-    int          right_count;
+    int right_count;
 } TrackLayout;
 
 
 /* The track data. Filled in by track_init(). */
 typedef struct {
     TrackPoint points[MAX_WAYPOINTS];
-    int        count;          /* How many centreline waypoints are used */
-    int        current_index;  /* Which waypoint the car is currently heading for */
-    int        lap_count;      /* How many full laps the car has completed */
+    int count;         /* How many centreline waypoints are used */
+    int current_index; /* Which waypoint the car is currently heading for */
+    int lap_count;     /* How many full laps the car has completed */
 
     /* Boundary cone positions for visualisation */
     TrackPoint left_cones[MAX_CONES];
-    int        left_count;
+    int left_count;
     TrackPoint right_cones[MAX_CONES];
-    int        right_count;
+    int right_count;
 } Track;
 
 

@@ -23,18 +23,22 @@
 static int g_tests  = 0;
 static int g_passed = 0;
 
-#define ASSERT(cond) do { \
-    g_tests++; \
-    if (cond) { \
-        g_passed++; \
-    } else { \
-        fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond); \
-    } \
-} while (0)
+#define ASSERT(cond)                                                                               \
+    do {                                                                                           \
+        g_tests++;                                                                                 \
+        if (cond) {                                                                                \
+            g_passed++;                                                                            \
+        } else {                                                                                   \
+            fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond);                     \
+        }                                                                                          \
+    } while (0)
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
-static int is_finite_f(float x) { return x == x && fabsf(x) < 1e30f; }
+static int is_finite_f(float x)
+{
+    return x == x && fabsf(x) < 1e30f;
+}
 
 /* ---- Tests ---- */
 
@@ -47,7 +51,7 @@ static void test_command_finite_across_speeds(void)
         lqr_steer_reset();
         float u = lqr_steer_command(vx, 0.0f, 0.1f, 0.05f, 0.0f, 0.02f);
         ASSERT(is_finite_f(u));
-        ASSERT(fabsf(u) < 50.0f);   /* reference units, but must stay sane */
+        ASSERT(fabsf(u) < 50.0f); /* reference units, but must stay sane */
     }
 }
 
@@ -66,11 +70,11 @@ static void test_zero_error_zero_command(void)
 static void test_feedback_sign(void)
 {
     lqr_steer_reset();
-    float u_left  = lqr_steer_command(20.0f, 0.0f,  0.3f, 0.0f, 0.0f, 0.0f);
+    float u_left = lqr_steer_command(20.0f, 0.0f, 0.3f, 0.0f, 0.0f, 0.0f);
     lqr_steer_reset();
     float u_right = lqr_steer_command(20.0f, 0.0f, -0.3f, 0.0f, 0.0f, 0.0f);
-    ASSERT(u_left  < 0.0f);    /* car left of line -> steer right (negative) */
-    ASSERT(u_right > 0.0f);    /* car right of line -> steer left (positive) */
+    ASSERT(u_left < 0.0f);  /* car left of line -> steer right (negative) */
+    ASSERT(u_right > 0.0f); /* car right of line -> steer left (positive) */
 }
 
 /* Heading-error sign: +e2 (car pointing left of the path tangent) must produce a
@@ -87,10 +91,10 @@ static void test_heading_error_sign(void)
 static void test_curvature_feedforward_sign(void)
 {
     lqr_steer_reset();
-    float u_left  = lqr_steer_command(20.0f, 0.0f, 0.0f, 0.0f, 0.0f,  0.05f);
+    float u_left = lqr_steer_command(20.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.05f);
     lqr_steer_reset();
     float u_right = lqr_steer_command(20.0f, 0.0f, 0.0f, 0.0f, 0.0f, -0.05f);
-    ASSERT(u_left  > 0.0f);
+    ASSERT(u_left > 0.0f);
     ASSERT(u_right < 0.0f);
     /* symmetric about zero curvature */
     ASSERT_NEAR(u_left, -u_right, 1e-3f);
@@ -107,7 +111,7 @@ static void test_reset_clears_integrator(void)
     for (int i = 0; i < 200; i++)
         (void)lqr_steer_command(20.0f, 0.0f, 0.3f, 0.0f, 0.0f, 0.0f);
     float wound = lqr_steer_command(20.0f, 0.0f, 0.3f, 0.0f, 0.0f, 0.0f);
-    ASSERT(fabsf(wound) > fabsf(first));   /* integral made the command grow */
+    ASSERT(fabsf(wound) > fabsf(first)); /* integral made the command grow */
 
     lqr_steer_reset();
     float after_reset = lqr_steer_command(20.0f, 0.0f, 0.3f, 0.0f, 0.0f, 0.0f);

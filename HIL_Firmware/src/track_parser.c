@@ -1,6 +1,6 @@
 #include "../include/track_parser.h"
 #include "../include/path_planning.h"
-#include "../include/track_data.h"   /* generated from the track YAML by tools/gen_tracks.py */
+#include "../include/track_data.h" /* generated from the track YAML by tools/gen_tracks.py */
 
 #include <stdlib.h>
 #include <string.h>
@@ -85,7 +85,7 @@ void track_update(Track *track, float car_x, float car_y)
         float dx_next = car_x - track->points[next].x;
         float dy_next = car_y - track->points[next].y;
 
-        float dist_cur_sq  = dx_cur  * dx_cur  + dy_cur  * dy_cur;
+        float dist_cur_sq  = dx_cur * dx_cur + dy_cur * dy_cur;
         float dist_next_sq = dx_next * dx_next + dy_next * dy_next;
         float capture_sq   = WAYPOINT_CAPTURE_RADIUS_M * WAYPOINT_CAPTURE_RADIUS_M;
 

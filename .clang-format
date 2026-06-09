@@ -1,0 +1,55 @@
+# .clang-format - house C style for this repo.
+#
+# clang-format rewrites C source to match these rules (indentation, braces,
+# spacing, wrapping, alignment). Run `clang-format -i <file>` to format a file in
+# place, or `clang-format --dry-run --Werror <file>` to check without editing
+# (used in CI). Most editors apply it on save once this file exists.
+#
+# The settings below were chosen to match the code already in the tree, so
+# running it should be (close to) a no-op on existing files rather than a churn.
+---
+Language:        Cpp
+BasedOnStyle:    WebKit            # Allman braces on functions, attached on control flow
+
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+ColumnLimit:     100               # the tree runs wide; keep wide statements/tables intact
+
+# Braces: function bodies open on the next line (Allman), but if/for/while keep
+# the brace on the same line. WebKit's "Custom" breaking gives exactly this.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction:        true
+  AfterControlStatement: false
+  AfterStruct:          false
+  AfterUnion:           false
+  AfterEnum:            false
+  BeforeElse:           false
+  SplitEmptyFunction:   false
+
+# Pointers bind to the name: `Track *track`, `const char *want`.
+PointerAlignment: Right
+
+# Keep the aligned-assignment / aligned-#define style already used
+# (e.g. `track->count         = 0;`).
+AlignConsecutiveAssignments: true
+AlignConsecutiveMacros:      true
+AlignConsecutiveDeclarations: false
+AlignTrailingComments:       true
+
+# Short single-statement bodies stay on one line where they already do
+# (e.g. `if (...) return &TRACK_DATA[i];`), but don't collapse whole blocks.
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse   # keep one-line `if (...) return x;`
+AllowShortLoopsOnASingleLine:        false
+AllowShortBlocksOnASingleLine:       Empty
+
+SpaceBeforeParens:   ControlStatements
+SpacesInParentheses: false
+IndentCaseLabels:    false
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2             # the tree uses double blank lines between sections
+
+SortIncludes:    false            # include order here is deliberate, don't reorder
+...

@@ -40,11 +40,11 @@
  * Call between independent runs or test cases. */
 void lqr_steer_reset(void);
 
-float lqr_steer_command(float vx,          /* longitudinal speed, m/s        */
-                        float vy,          /* lateral (sideslip) velocity, m/s*/
-                        float e1,          /* cross-track error, m           */
-                        float e2,          /* heading error, rad             */
-                        float yaw_rate,    /* measured yaw rate, rad/s       */
-                        float path_kappa); /* path curvature at the car, 1/m */
+float lqr_steer_command(float vx, /* longitudinal speed, m/s        */
+    float vy,                     /* lateral (sideslip) velocity, m/s*/
+    float e1,                     /* cross-track error, m           */
+    float e2,                     /* heading error, rad             */
+    float yaw_rate,               /* measured yaw rate, rad/s       */
+    float path_kappa);            /* path curvature at the car, 1/m */
 
 #endif /* LQR_STEER_H */

@@ -30,8 +30,7 @@
  * torque demand. out_target_speed, if non-NULL, receives the planner's target
  * speed for this tick (telemetry only).
  */
-float motion_control_update(VehicleState *state, const Track *track,
-                            float *out_target_speed);
+float motion_control_update(VehicleState *state, const Track *track, float *out_target_speed);
 
 /*
  * Reset the driver's internal state (progress index, throttle integrator) and

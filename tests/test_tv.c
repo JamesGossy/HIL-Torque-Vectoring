@@ -21,14 +21,15 @@
 static int g_tests  = 0;
 static int g_passed = 0;
 
-#define ASSERT(cond) do { \
-    g_tests++; \
-    if (cond) { \
-        g_passed++; \
-    } else { \
-        fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond); \
-    } \
-} while (0)
+#define ASSERT(cond)                                                                               \
+    do {                                                                                           \
+        g_tests++;                                                                                 \
+        if (cond) {                                                                                \
+            g_passed++;                                                                            \
+        } else {                                                                                   \
+            fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond);                     \
+        }                                                                                          \
+    } while (0)
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
@@ -37,12 +38,12 @@ static int g_passed = 0;
 
 static SensorData straight(float speed)
 {
-    SensorData s = {0};
+    SensorData s     = { 0 };
     s.velocity       = speed;
     s.steering_angle = 0.0f;
     s.yaw_rate       = 0.0f;
     /* wheel speeds: all equal for straight line (no differential) */
-    float w = (speed > 0.0f) ? speed / 0.254f : 0.0f; /* v / wheel_radius */
+    float w                 = (speed > 0.0f) ? speed / 0.254f : 0.0f; /* v / wheel_radius */
     s.wheel_speed[WHEEL_FL] = w;
     s.wheel_speed[WHEEL_FR] = w;
     s.wheel_speed[WHEEL_RL] = w;
@@ -61,7 +62,7 @@ static void test_zero_error_even_split(void)
 {
     SensorData s = straight(10.0f);
     WheelTorques t;
-    float total = 40.0f;   /* any positive value */
+    float total = 40.0f; /* any positive value */
     torque_vectoring_update(&s, total, KP_YAW_DEFAULT, &t);
 
     float expected = total * 0.25f;
@@ -77,9 +78,9 @@ static void test_zero_error_even_split(void)
  */
 static void test_low_speed_no_yaw_demand(void)
 {
-    SensorData s = {0};
+    SensorData s     = { 0 };
     s.velocity       = 0.1f;
-    s.steering_angle = 0.5f;  /* large steer - should produce no demand */
+    s.steering_angle = 0.5f; /* large steer - should produce no demand */
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, KP_YAW_DEFAULT, &t);
 
@@ -94,13 +95,13 @@ static void test_low_speed_no_yaw_demand(void)
  */
 static void test_left_turn_biases_right_wheels(void)
 {
-    SensorData s = straight(10.0f);
-    s.steering_angle = 0.3f;   /* turning left */
-    s.yaw_rate       = 0.0f;   /* not rotating yet -> large positive error */
+    SensorData s     = straight(10.0f);
+    s.steering_angle = 0.3f; /* turning left */
+    s.yaw_rate       = 0.0f; /* not rotating yet -> large positive error */
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, KP_YAW_DEFAULT, &t);
 
-    ASSERT(t.fr > t.fl);   /* right (outer) > left (inner) */
+    ASSERT(t.fr > t.fl); /* right (outer) > left (inner) */
     ASSERT(t.rr > t.rl);
     /* The differential is split front/rear by TV_REAR_SHARE: the rear axle's
      * differential is to the front's as TV_REAR_SHARE is to (1 - TV_REAR_SHARE).
@@ -116,9 +117,9 @@ static void test_left_turn_biases_right_wheels(void)
  */
 static void test_right_turn_biases_left_wheels(void)
 {
-    SensorData s = straight(10.0f);
+    SensorData s     = straight(10.0f);
     s.steering_angle = -0.3f;
-    s.yaw_rate       =  0.0f;
+    s.yaw_rate       = 0.0f;
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, KP_YAW_DEFAULT, &t);
 
@@ -131,9 +132,9 @@ static void test_right_turn_biases_left_wheels(void)
  */
 static void test_symmetry(void)
 {
-    SensorData sL = straight(12.0f);
-    SensorData sR = straight(12.0f);
-    sL.steering_angle =  0.25f;
+    SensorData sL     = straight(12.0f);
+    SensorData sR     = straight(12.0f);
+    sL.steering_angle = 0.25f;
     sR.steering_angle = -0.25f;
 
     WheelTorques tL, tR;
@@ -153,13 +154,14 @@ static void test_symmetry(void)
  */
 static void test_deadband(void)
 {
-    SensorData s = {0};
+    SensorData s     = { 0 };
     s.velocity       = 10.0f;
     s.steering_angle = 0.0f;
     /* Inject a tiny yaw rate error just inside the deadband */
-    float desired = 10.0f * tanf(0.0f) / 1.55f;   /* = 0 for steer = 0 */
-    s.yaw_rate = desired + (TV_YAW_DEADBAND * 0.5f); /* error = -half_band */
-    for (int i = 0; i < 4; i++) s.wheel_speed[i] = 10.0f / 0.254f;
+    float desired = 10.0f * tanf(0.0f) / 1.55f;         /* = 0 for steer = 0 */
+    s.yaw_rate    = desired + (TV_YAW_DEADBAND * 0.5f); /* error = -half_band */
+    for (int i = 0; i < 4; i++)
+        s.wheel_speed[i] = 10.0f / 0.254f;
 
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, KP_YAW_DEFAULT, &t);
@@ -174,11 +176,11 @@ static void test_deadband(void)
  */
 static void test_clamp_upper(void)
 {
-    SensorData s = straight(5.0f);
+    SensorData s     = straight(5.0f);
     s.steering_angle = 0.6f;
-    s.yaw_rate       = -5.0f;   /* extreme understeer -> huge positive error */
+    s.yaw_rate       = -5.0f; /* extreme understeer -> huge positive error */
     WheelTorques t;
-    torque_vectoring_update(&s, 200.0f, 500.0f, &t);   /* absurd gain */
+    torque_vectoring_update(&s, 200.0f, 500.0f, &t); /* absurd gain */
 
     ASSERT(t.fl <= MAX_MOTOR_TORQUE_NM + 0.001f);
     ASSERT(t.fr <= MAX_MOTOR_TORQUE_NM + 0.001f);
@@ -188,9 +190,9 @@ static void test_clamp_upper(void)
 
 static void test_clamp_lower(void)
 {
-    SensorData s = straight(5.0f);
+    SensorData s     = straight(5.0f);
     s.steering_angle = -0.6f;
-    s.yaw_rate       =  5.0f;   /* extreme oversteer -> huge negative error */
+    s.yaw_rate       = 5.0f; /* extreme oversteer -> huge negative error */
     WheelTorques t;
     torque_vectoring_update(&s, 200.0f, 500.0f, &t);
 
@@ -205,7 +207,7 @@ static void test_clamp_lower(void)
  */
 static void test_zero_gain(void)
 {
-    SensorData s = straight(15.0f);
+    SensorData s     = straight(15.0f);
     s.steering_angle = 0.4f;
     s.yaw_rate       = 0.0f;
     WheelTorques t;
@@ -235,19 +237,19 @@ static void test_speed_gain_scaling(void)
      * small enough that neither speed saturates the bias clamp. */
     SensorData sLow  = straight(6.0f);
     SensorData sHigh = straight(24.0f);
-    sLow.yaw_rate  = -0.1f;
-    sHigh.yaw_rate = -0.1f;
+    sLow.yaw_rate    = -0.1f;
+    sHigh.yaw_rate   = -0.1f;
 
-    const float kp = 5.0f;   /* small gain: keep both cases below max_bias */
+    const float kp = 5.0f; /* small gain: keep both cases below max_bias */
     WheelTorques tLow, tHigh;
     torque_vectoring_reset();
-    torque_vectoring_update(&sLow,  40.0f, kp, &tLow);
+    torque_vectoring_update(&sLow, 40.0f, kp, &tLow);
     torque_vectoring_reset();
     torque_vectoring_update(&sHigh, 40.0f, kp, &tHigh);
 
     /* At low speed effective_kp = kp*(12/6)=2*kp; at high = kp*(12/24)=0.5*kp,
      * so the low-speed bias must be the larger (neither clamped). */
-    float bias_low  = tLow.fr  - tLow.fl;
+    float bias_low  = tLow.fr - tLow.fl;
     float bias_high = tHigh.fr - tHigh.fl;
     ASSERT(bias_low > bias_high);
 }
@@ -261,19 +263,19 @@ static void test_speed_gain_scaling(void)
  */
 static void test_saturation_preserves_differential(void)
 {
-    SensorData s = straight(8.0f);
+    SensorData s     = straight(8.0f);
     s.steering_angle = 0.5f;
-    s.yaw_rate       = -3.0f;        /* large positive (understeer) error */
+    s.yaw_rate       = -3.0f; /* large positive (understeer) error */
     WheelTorques t;
-    torque_vectoring_update(&s, 104.0f, 300.0f, &t);  /* base ~26 Nm/wheel, saturating bias */
+    torque_vectoring_update(&s, 104.0f, 300.0f, &t); /* base ~26 Nm/wheel, saturating bias */
 
     /* Commanded rear differential = saturated bias (= max_bias) distributed by
      * the rear share, which is weighted by 2x (see torque_vectoring.c step 7):
      *   rear_diff = max_bias * (2 * TV_REAR_SHARE). */
     float max_bias  = MAX_MOTOR_TORQUE_NM * 0.5f;
     float want_diff = max_bias * (2.0f * TV_REAR_SHARE);
-    ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f);   /* outer clipped at peak */
-    ASSERT(t.rl >= MIN_MOTOR_TORQUE_NM - 0.001f);   /* inner in regen */
+    ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f); /* outer clipped at peak */
+    ASSERT(t.rl >= MIN_MOTOR_TORQUE_NM - 0.001f); /* inner in regen */
     /* Differential preserved despite the clip (would collapse under a naive clamp). */
     ASSERT_NEAR(t.rr - t.rl, want_diff, 0.5f);
 }
@@ -285,7 +287,11 @@ static void test_saturation_preserves_differential(void)
  * PID state across calls (correct for the continuous HIL loop, but it would let
  * one test case's residual integrator/derivative memory leak into the next), so
  * we reset between cases for isolation. */
-#define RUN(fn) do { torque_vectoring_reset(); fn(); } while (0)
+#define RUN(fn)                                                                                    \
+    do {                                                                                           \
+        torque_vectoring_reset();                                                                  \
+        fn();                                                                                      \
+    } while (0)
 
 int main(void)
 {

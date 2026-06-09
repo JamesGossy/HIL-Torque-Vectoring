@@ -1,5 +1,10 @@
 export TMPDIR := /tmp
 
+# This Makefile uses POSIX shell idioms (rm -rf, mkdir -p, the clang-format
+# detection below), so pin the shell to sh rather than let Windows make default
+# to cmd.exe. MSYS2/MinGW and every Unix provide /bin/sh.
+SHELL := /bin/sh
+
 # `all` is the default goal regardless of rule order (the generated-header rule
 # below would otherwise become the first target, so a bare `make` would only
 # regenerate track_data.h and stop).
@@ -46,6 +51,30 @@ TRACK_DATA  = HIL_Firmware/include/track_data.h
 
 $(TRACK_DATA): $(TRACK_YAML) tools/gen_tracks.py
 	$(PYTHON) tools/gen_tracks.py
+
+# Sources clang-format owns: every hand-written C file. track_data.h is
+# generated (gen_tracks.py controls its layout) so it is deliberately excluded.
+#
+# Find clang-format. Prefer one on PATH; otherwise fall back to the default
+# Windows LLVM install dir, since the LLVM/winget installer does not always add
+# it to the PATH of an already-open shell. Detection runs in the shell (GNU make
+# cannot handle the space in "Program Files" via $(wildcard)); the chosen path
+# may contain a space, so the recipes quote "$(CLANG_FORMAT)".
+#
+# This is a recursively-expanded (=) variable so the detection only runs when a
+# format target actually uses it - `make all`/`eval`/`test` never evaluate it,
+# and so never depend on a POSIX shell being present. Override with
+# `make format CLANG_FORMAT=/path/to/clang-format`.
+CLANG_FORMAT ?= $(shell command -v clang-format 2>/dev/null \
+    || for p in "/c/Program Files/LLVM/bin/clang-format.exe" \
+                "/c/Program Files (x86)/LLVM/bin/clang-format.exe"; do \
+         [ -x "$$p" ] && { echo "$$p"; break; }; \
+       done \
+    || echo clang-format)
+FORMAT_SRCS   = $(wildcard HIL_Firmware/src/*.c HIL_Firmware/include/*.h \
+                           ECU_Firmware/src/*.c ECU_Firmware/include/*.h \
+                           shared/*.h tests/*.c tools/*.c)
+FORMAT_SRCS  := $(filter-out HIL_Firmware/include/track_data.h, $(FORMAT_SRCS))
 
 # Steering is the model-based LQR law (HIL_Firmware/src/lqr_steer.c); the tuned
 # gains are the in-source defaults (from the robustness-aware sweep, see
@@ -106,7 +135,7 @@ PERF_SRCS = tools/tool_perf_sim.c \
             HIL_Firmware/src/lqr_steer.c \
             ECU_Firmware/src/torque_vectoring.c
 
-.PHONY: all run eval test perf clean
+.PHONY: all run eval test perf clean format format-check
 
 all: $(TRACK_DATA) $(HIL_BUILD) $(ECU_BUILD) $(HIL_SIM) $(ECU_OBJ)
 
@@ -152,3 +181,12 @@ perf: $(TRACK_DATA) $(HIL_BUILD)
 
 clean:
 	rm -rf $(HIL_BUILD) $(ECU_BUILD)
+
+# Reformat all hand-written C in place to the .clang-format house style.
+format:
+	"$(CLANG_FORMAT)" -i $(FORMAT_SRCS)
+
+# Check formatting without editing (non-zero exit if any file is off-style).
+# Use in CI to keep the tree formatted.
+format-check:
+	"$(CLANG_FORMAT)" --dry-run --Werror $(FORMAT_SRCS)

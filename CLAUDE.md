@@ -48,6 +48,17 @@ that are clean only at one point, are not valid.
 
 The tuned values are the in-source defaults (no `-D` needed for the clean lap).
 
+## Code style
+
+C is formatted with clang-format (`.clang-format` in the repo root; house style
+is WebKit-based — Allman braces on functions, attached on control flow, 4-space
+indent, 100-col). `make format` reformats every hand-written C file in place;
+`make format-check` verifies without editing (non-zero exit if anything is
+off-style — suitable for CI). The generated `track_data.h` is excluded (its
+layout is owned by `gen_tracks.py`). clang-format does not preserve hand-aligned
+columns inside expressions, so don't bother manually aligning operands — it will
+be normalised.
+
 ## CI
 
 `.github/workflows/ci.yml` builds, runs `make test`, then runs `make eval` and

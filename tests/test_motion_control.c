@@ -19,14 +19,15 @@
 static int g_tests  = 0;
 static int g_passed = 0;
 
-#define ASSERT(cond) do { \
-    g_tests++; \
-    if (cond) { \
-        g_passed++; \
-    } else { \
-        fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond); \
-    } \
-} while (0)
+#define ASSERT(cond)                                                                               \
+    do {                                                                                           \
+        g_tests++;                                                                                 \
+        if (cond) {                                                                                \
+            g_passed++;                                                                            \
+        } else {                                                                                   \
+            fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond);                     \
+        }                                                                                          \
+    } while (0)
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
@@ -44,17 +45,17 @@ static Track make_straight_track(float length, float half_w)
     memset(&t, 0, sizeof(t));
     int n = 20;
     for (int i = 0; i < n; i++) {
-        float x = length * i / (float)(n - 1);
+        float x            = length * i / (float)(n - 1);
         t.points[i].x      = x;
         t.points[i].y      = 0.0f;
         t.left_cones[i].x  = x;
-        t.left_cones[i].y  =  half_w;
+        t.left_cones[i].y  = half_w;
         t.right_cones[i].x = x;
         t.right_cones[i].y = -half_w;
     }
-    t.count       = n;
-    t.left_count  = n;
-    t.right_count = n;
+    t.count         = n;
+    t.left_count    = n;
+    t.right_count   = n;
     t.current_index = 0;
     return t;
 }
@@ -72,8 +73,8 @@ static VehicleState make_state(float x, float y, float heading, float speed)
 /* on-path car pointing straight ahead must get positive throttle demand */
 static void test_below_target_speed_gives_throttle(void)
 {
-    Track t = make_straight_track(50.0f, 2.5f);
-    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 5.0f);   /* well below TARGET_SPEED_MS */
+    Track t        = make_straight_track(50.0f, 2.5f);
+    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 5.0f); /* well below TARGET_SPEED_MS */
 
     float torque = motion_control_update(&s, &t, NULL);
     ASSERT(torque > 0.0f);
@@ -82,7 +83,7 @@ static void test_below_target_speed_gives_throttle(void)
 /* a car above the target speed should get a braking (negative) demand */
 static void test_above_target_speed_gives_brake(void)
 {
-    Track t = make_straight_track(50.0f, 2.5f);
+    Track t        = make_straight_track(50.0f, 2.5f);
     VehicleState s = make_state(0.0f, 0.0f, 0.0f, TARGET_SPEED_MS + 5.0f);
 
     float torque = motion_control_update(&s, &t, NULL);
@@ -92,8 +93,8 @@ static void test_above_target_speed_gives_brake(void)
 /* throttle must never exceed DRIVER_TORQUE_NM */
 static void test_throttle_clamped(void)
 {
-    Track t = make_straight_track(50.0f, 2.5f);
-    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 0.0f);   /* stationary -> max demand */
+    Track t        = make_straight_track(50.0f, 2.5f);
+    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 0.0f); /* stationary -> max demand */
 
     float torque = motion_control_update(&s, &t, NULL);
     ASSERT(torque <= DRIVER_TORQUE_NM + 0.001f);
@@ -102,7 +103,7 @@ static void test_throttle_clamped(void)
 /* braking demand must never exceed DRIVER_BRAKE_NM in magnitude */
 static void test_brake_clamped(void)
 {
-    Track t = make_straight_track(50.0f, 2.5f);
+    Track t        = make_straight_track(50.0f, 2.5f);
     VehicleState s = make_state(0.0f, 0.0f, 0.0f, TARGET_SPEED_MS * 3.0f);
 
     float torque = motion_control_update(&s, &t, NULL);
@@ -119,14 +120,14 @@ static void test_steer_clamped(void)
     for (int i = 0; i < 20; i++)
         motion_control_update(&s, &t, NULL);
 
-    ASSERT(s.steering <=  MAX_STEER_RAD + 0.001f);
+    ASSERT(s.steering <= MAX_STEER_RAD + 0.001f);
     ASSERT(s.steering >= -MAX_STEER_RAD - 0.001f);
 }
 
 /* on-path car pointing straight: steering should remain near zero */
 static void test_on_path_small_steer(void)
 {
-    Track t = make_straight_track(50.0f, 2.5f);
+    Track t        = make_straight_track(50.0f, 2.5f);
     VehicleState s = make_state(5.0f, 0.0f, 0.0f, 10.0f);
 
     motion_control_update(&s, &t, NULL);
@@ -136,9 +137,9 @@ static void test_on_path_small_steer(void)
 /* out_target_speed is written when a non-NULL pointer is passed */
 static void test_out_target_speed_written(void)
 {
-    Track t = make_straight_track(50.0f, 2.5f);
+    Track t        = make_straight_track(50.0f, 2.5f);
     VehicleState s = make_state(0.0f, 0.0f, 0.0f, 10.0f);
-    float target = -999.0f;
+    float target   = -999.0f;
 
     motion_control_update(&s, &t, &target);
     ASSERT(target >= 0.0f);

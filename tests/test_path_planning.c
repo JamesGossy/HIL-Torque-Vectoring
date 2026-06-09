@@ -18,14 +18,15 @@
 static int g_tests  = 0;
 static int g_passed = 0;
 
-#define ASSERT(cond) do { \
-    g_tests++; \
-    if (cond) { \
-        g_passed++; \
-    } else { \
-        fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond); \
-    } \
-} while (0)
+#define ASSERT(cond)                                                                               \
+    do {                                                                                           \
+        g_tests++;                                                                                 \
+        if (cond) {                                                                                \
+            g_passed++;                                                                            \
+        } else {                                                                                   \
+            fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond);                     \
+        }                                                                                          \
+    } while (0)
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
@@ -42,9 +43,9 @@ static Track make_oval(int n, float length, float half_w)
     memset(&t, 0, sizeof(t));
     if (n > MAX_CONES) n = MAX_CONES;
     for (int i = 0; i < n; i++) {
-        float x = length * i / (float)(n - 1);
+        float x            = length * i / (float)(n - 1);
         t.left_cones[i].x  = x;
-        t.left_cones[i].y  =  half_w;
+        t.left_cones[i].y  = half_w;
         t.right_cones[i].x = x;
         t.right_cones[i].y = -half_w;
     }
@@ -67,7 +68,7 @@ static void test_produces_waypoints(void)
 static void test_waypoints_inside_corridor(void)
 {
     float half_w = 2.5f;
-    Track t = make_oval(30, 60.0f, half_w);
+    Track t      = make_oval(30, 60.0f, half_w);
     path_plan(&t);
 
     for (int i = 0; i < t.count; i++)
@@ -114,13 +115,17 @@ static void test_minimal_cone_set(void)
 {
     Track t;
     memset(&t, 0, sizeof(t));
-    t.left_cones[0].x  = 0.0f; t.left_cones[0].y  =  2.0f;
-    t.left_cones[1].x  = 5.0f; t.left_cones[1].y  =  2.0f;
-    t.right_cones[0].x = 0.0f; t.right_cones[0].y = -2.0f;
-    t.right_cones[1].x = 5.0f; t.right_cones[1].y = -2.0f;
-    t.left_count  = 2;
-    t.right_count = 2;
-    path_plan(&t);   /* must not crash */
+    t.left_cones[0].x  = 0.0f;
+    t.left_cones[0].y  = 2.0f;
+    t.left_cones[1].x  = 5.0f;
+    t.left_cones[1].y  = 2.0f;
+    t.right_cones[0].x = 0.0f;
+    t.right_cones[0].y = -2.0f;
+    t.right_cones[1].x = 5.0f;
+    t.right_cones[1].y = -2.0f;
+    t.left_count       = 2;
+    t.right_count      = 2;
+    path_plan(&t); /* must not crash */
     ASSERT(t.count >= 0);
 }
 

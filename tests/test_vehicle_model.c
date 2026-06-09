@@ -17,14 +17,15 @@
 static int g_tests  = 0;
 static int g_passed = 0;
 
-#define ASSERT(cond) do { \
-    g_tests++; \
-    if (cond) { \
-        g_passed++; \
-    } else { \
-        fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond); \
-    } \
-} while (0)
+#define ASSERT(cond)                                                                               \
+    do {                                                                                           \
+        g_tests++;                                                                                 \
+        if (cond) {                                                                                \
+            g_passed++;                                                                            \
+        } else {                                                                                   \
+            fprintf(stderr, "FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #cond);                     \
+        }                                                                                          \
+    } while (0)
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
@@ -32,7 +33,7 @@ static int g_passed = 0;
 
 static WheelTorques zero_torques(void)
 {
-    WheelTorques t = {0};
+    WheelTorques t = { 0 };
     return t;
 }
 
@@ -51,16 +52,16 @@ static void test_init_zeros_state(void)
     VehicleState s;
     vehicle_model_init(&s, 10.0f, 20.0f, 1.0f);
 
-    ASSERT_NEAR(s.x,        10.0f, 1e-5f);
-    ASSERT_NEAR(s.y,        20.0f, 1e-5f);
-    ASSERT_NEAR(s.heading,   1.0f, 1e-5f);
-    ASSERT_NEAR(s.velocity,  0.0f, 1e-5f);
-    ASSERT_NEAR(s.vy,        0.0f, 1e-5f);
-    ASSERT_NEAR(s.yaw_rate,  0.0f, 1e-5f);
-    ASSERT_NEAR(s.ax,        0.0f, 1e-5f);
-    ASSERT_NEAR(s.ay,        0.0f, 1e-5f);
-    ASSERT_NEAR(s.ax_filt,   0.0f, 1e-5f);
-    ASSERT_NEAR(s.ay_filt,   0.0f, 1e-5f);
+    ASSERT_NEAR(s.x, 10.0f, 1e-5f);
+    ASSERT_NEAR(s.y, 20.0f, 1e-5f);
+    ASSERT_NEAR(s.heading, 1.0f, 1e-5f);
+    ASSERT_NEAR(s.velocity, 0.0f, 1e-5f);
+    ASSERT_NEAR(s.vy, 0.0f, 1e-5f);
+    ASSERT_NEAR(s.yaw_rate, 0.0f, 1e-5f);
+    ASSERT_NEAR(s.ax, 0.0f, 1e-5f);
+    ASSERT_NEAR(s.ay, 0.0f, 1e-5f);
+    ASSERT_NEAR(s.ax_filt, 0.0f, 1e-5f);
+    ASSERT_NEAR(s.ay_filt, 0.0f, 1e-5f);
     for (int i = 0; i < 4; i++)
         ASSERT_NEAR(s.wheelspeed[i], 0.0f, 1e-5f);
 }
@@ -75,8 +76,8 @@ static void test_zero_torque_no_motion(void)
     for (int i = 0; i < 100; i++)
         vehicle_model_update(&s, &t, 0.01f);
 
-    ASSERT_NEAR(s.x,       0.0f, 0.01f);
-    ASSERT_NEAR(s.y,       0.0f, 0.01f);
+    ASSERT_NEAR(s.x, 0.0f, 0.01f);
+    ASSERT_NEAR(s.y, 0.0f, 0.01f);
     ASSERT_NEAR(s.velocity, 0.0f, 0.01f);
 }
 
@@ -93,7 +94,7 @@ static void test_equal_torque_accelerates(void)
 
     ASSERT(s.velocity > v_before);
     ASSERT(s.x > 0.0f);
-    ASSERT_NEAR(s.y, 0.0f, 0.05f);   /* straight-ahead, no lateral drift */
+    ASSERT_NEAR(s.y, 0.0f, 0.05f); /* straight-ahead, no lateral drift */
 }
 
 /* speed is clamped to MAX_SPEED_MS regardless of torque magnitude */
@@ -101,7 +102,7 @@ static void test_speed_clamp(void)
 {
     VehicleState s;
     vehicle_model_init(&s, 0.0f, 0.0f, 0.0f);
-    WheelTorques t = equal_torques(200.0f);   /* unrealistically large */
+    WheelTorques t = equal_torques(200.0f); /* unrealistically large */
 
     for (int i = 0; i < 1000; i++)
         vehicle_model_update(&s, &t, 0.01f);
@@ -120,7 +121,7 @@ static void test_straight_line_heading(void)
         vehicle_model_update(&s, &t, 0.01f);
 
     ASSERT_NEAR(s.heading, 0.0f, 0.05f);
-    ASSERT_NEAR(s.y,       0.0f, 0.1f);
+    ASSERT_NEAR(s.y, 0.0f, 0.1f);
 }
 
 /* left-steering generates positive yaw rate and leftward lateral motion */
@@ -128,15 +129,15 @@ static void test_left_steer_yaws_left(void)
 {
     VehicleState s;
     vehicle_model_init(&s, 0.0f, 0.0f, 0.0f);
-    s.velocity = 10.0f;   /* pre-seed speed so the tyre forces are active */
-    s.steering = 0.2f;
+    s.velocity     = 10.0f; /* pre-seed speed so the tyre forces are active */
+    s.steering     = 0.2f;
     WheelTorques t = equal_torques(10.0f);
 
     for (int i = 0; i < 50; i++)
         vehicle_model_update(&s, &t, 0.01f);
 
     ASSERT(s.yaw_rate > 0.0f);
-    ASSERT(s.heading  > 0.0f);
+    ASSERT(s.heading > 0.0f);
 }
 
 /* symmetry: mirroring steer sign mirrors the resulting yaw rate sign */
@@ -146,9 +147,9 @@ static void test_steer_symmetry(void)
     vehicle_model_init(&sL, 0.0f, 0.0f, 0.0f);
     vehicle_model_init(&sR, 0.0f, 0.0f, 0.0f);
     sL.velocity = sR.velocity = 10.0f;
-    sL.steering =  0.2f;
-    sR.steering = -0.2f;
-    WheelTorques t = equal_torques(10.0f);
+    sL.steering               = 0.2f;
+    sR.steering               = -0.2f;
+    WheelTorques t            = equal_torques(10.0f);
 
     for (int i = 0; i < 50; i++) {
         vehicle_model_update(&sL, &t, 0.01f);
@@ -163,7 +164,7 @@ static void test_braking_decelerates(void)
 {
     VehicleState s;
     vehicle_model_init(&s, 0.0f, 0.0f, 0.0f);
-    s.velocity = 15.0f;
+    s.velocity     = 15.0f;
     WheelTorques t = equal_torques(-20.0f);
 
     float v_before = s.velocity;
@@ -171,7 +172,7 @@ static void test_braking_decelerates(void)
         vehicle_model_update(&s, &t, 0.01f);
 
     ASSERT(s.velocity < v_before);
-    ASSERT(s.velocity >= 0.0f);   /* must not go negative */
+    ASSERT(s.velocity >= 0.0f); /* must not go negative */
 }
 
 /* wheel speeds must be positive and proportional to forward speed */
@@ -179,7 +180,7 @@ static void test_wheelspeed_positive_at_speed(void)
 {
     VehicleState s;
     vehicle_model_init(&s, 0.0f, 0.0f, 0.0f);
-    s.velocity = 10.0f;
+    s.velocity     = 10.0f;
     WheelTorques t = equal_torques(10.0f);
     vehicle_model_update(&s, &t, 0.01f);
 
