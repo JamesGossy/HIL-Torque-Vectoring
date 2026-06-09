@@ -48,13 +48,12 @@ CAR_OUTLINE = (255, 180, 180)
 TRAIL_COL = (60, 200, 60)
 
 # ---- GIF capture settings ----
-# hil_sim streams STATE lines at 20 Hz, so each line is 0.05 s of sim time.
-# Capturing every 2nd line gives one frame per 0.1 s of sim time. Playing those
-# frames back at 5 fps stretches 0.1 s of sim into 0.2 s of wall clock, i.e.
-# the GIF runs at half real speed (2x slower) so the lap is easy to follow.
-CAPTURE_EVERY = 2
-GIF_FPS = 5
-TRAIL_LEN = 60
+# hil_sim streams STATE lines at 20 Hz (one line every 0.05 s of sim time).
+# Capturing every line and playing back at 20 fps makes the GIF run in real
+# time: a ~27 s lap plays in ~27 s, smoothly, with no skipped motion.
+CAPTURE_EVERY = 1
+GIF_FPS = 20
+TRAIL_LEN = 70
 
 # ---- Coordinate transform (fit whole track) ----
 _scale = 1.0
@@ -228,7 +227,7 @@ def main():
         sys.exit(1)
 
     # Downscale to keep the GIF small, and write a looping animation
-    target_w = 460
+    target_w = 480
     if frames[0].width > target_w:
         ratio = target_w / frames[0].width
         new_size = (target_w, int(frames[0].height * ratio))
@@ -237,7 +236,7 @@ def main():
     # Quantise every frame against ONE shared palette derived from the first
     # frame, so inter-frame GIF delta compression stays small (per-frame adaptive
     # palettes change colours slightly each frame and bloat the file).
-    base_pal = frames[0].convert("P", palette=Image.ADAPTIVE, colors=48)
+    base_pal = frames[0].convert("P", palette=Image.ADAPTIVE, colors=64)
     pal_frames = [f.quantize(palette=base_pal, dither=Image.NONE) for f in frames]
     duration_ms = int(1000 / GIF_FPS)
     pal_frames[0].save(
@@ -247,6 +246,11 @@ def main():
         duration=duration_ms,
         loop=0,
         optimize=True,
+        # disposal=2 clears each frame back to the background before drawing the
+        # next, which is required because the trail's tail moves and would
+        # otherwise smear into a permanent streak. Pillow's optimize still only
+        # stores the changed bounding box, so the per-frame cost is the car-plus-
+        # trail region, not the whole image.
         disposal=2,
     )
 

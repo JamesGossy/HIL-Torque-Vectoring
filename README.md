@@ -6,7 +6,7 @@
 
 <img src="docs/track.gif" alt="The simulated car driving a full lap of the FSG 2024 track" width="520">
 
-*One lap of the Formula Student Germany 2024 track, slowed to half speed. The blue
+*One full lap of the Formula Student Germany 2024 track, in real time. The blue
 and yellow dots are the boundary cones. The cyan line is the racing line the car
 computed before it set off. The red box is the car, with a green trail behind it.*
 
@@ -61,27 +61,24 @@ rate is called the **yaw rate**. A normal car with one engine cannot do much if 
 is rotating too slowly or too quickly for the corner. A car with four motors can fix
 it on the fly.
 
-Picture a left-hand corner from above. Without help, the car does not turn enough
-and drifts wide of where you wanted it to go:
+Without help, the car does not turn enough for a tight corner and runs wide of
+where you wanted it to go. The fix is to give the **outer** wheels more torque and
+the **inner** wheels less. The difference twists the car further into the corner.
+The controller measures how fast the car is really rotating, compares it to how
+fast it should be rotating, and keeps adjusting the left and right torque to close
+the gap.
 
-```
-        wanted line ....  car runs wide
-                       .              `.
-                      .                  `.  <- car ends up out here
-        corner       .                     `.
-                    .   the car only
-       o  car  ->  .    turned this much
-```
+Here is the car at the tightest corner of the lap, the hairpin, with the live
+torque bars from the visualiser beside it. The outer (left) wheels are driving and
+the inner (right) wheels are braking on regen, which is what swings the car round:
 
-The fix is to give the **outer** wheels (here the right ones) more torque and the
-**inner** wheels less. The difference twists the car further into the corner and
-puts it back on the wanted line. The controller measures how fast the car is really
-rotating, compares it to how fast it should be rotating, and keeps adjusting the left
-and right torque to close the gap.
+<div align="center">
+<img src="docs/tv_hairpin.png" alt="The car at the hairpin with the four wheel-torque bars showing the left/right split" width="620">
+</div>
 
-You can see this in the real torque readings from one corner of the lap. The four
-lines start together on the straight, then fan apart through the corner as each
-wheel is given its own torque:
+You can also see it over time. In the real torque readings from one corner, the
+four lines start together on the straight, then fan apart through the corner as
+each wheel is given its own torque:
 
 <div align="center">
 <img src="docs/torque_corner.png" alt="The four wheel torques fanning apart through a corner" width="680">
@@ -280,8 +277,9 @@ Worth trying: press `T` to turn torque vectoring off, and watch the four torque 
 go equal while the lap time gets worse. Press `]` to turn the gain up high and watch
 the car get twitchy.
 
-The header GIF and the two plots above are made from real sim data with
-`python tools/make_track_gif.py` and `python tools/make_plots.py`.
+The header GIF, the hairpin shot, and the plots above are all made from real sim
+data with `python tools/make_track_gif.py`, `python tools/make_tv_shot.py`, and
+`python tools/make_plots.py`.
 
 ---
 
