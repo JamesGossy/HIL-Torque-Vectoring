@@ -2,236 +2,259 @@
 
 # HIL Torque Vectoring
 
-**A four-wheel torque-vectoring race car, simulated and controlled entirely in C.**
+**A four-wheel torque-vectoring race car, simulated and controlled in C.**
 
-<img src="docs/track.gif" alt="The simulated car driving a full lap of the FSG 2024 track" width="560">
+<img src="docs/track.gif" alt="The simulated car driving a full lap of the FSG 2024 track" width="520">
 
-*One clean lap of the Formula Student Germany 2024 endurance track. Blue and
-yellow dots are the boundary cones; the cyan line is the computed racing line;
-the red box is the car, leaving a green trail.*
+*One lap of the Formula Student Germany 2024 track, slowed to half speed. The blue
+and yellow dots are the boundary cones. The cyan line is the racing line the car
+computed before it set off. The red box is the car, with a green trail behind it.*
 
 </div>
 
 ---
 
-## What this is, in one paragraph
+## What it does
 
-A racing car has four electric motors — one per wheel. **Torque vectoring** is
-the trick of feeding each wheel a slightly different amount of power so the car
-turns exactly as sharply as the driver is asking, without sliding wide
-(understeer) or spinning out (oversteer). This project builds the whole loop in
-software: a **physics model** of the car, a **virtual driver** that steers and
-sets speed around a real Formula Student track, and the **ECU control algorithm**
-that does the torque vectoring. They run together 100 times a second, and a live
-visualiser shows the car driving the lap you see above.
+A racing car can have four electric motors, one on each wheel. Torque vectoring
+is the trick of giving each wheel a slightly different amount of power so the car
+turns exactly as much as the driver wants. Give the outer wheels more push and the
+inner wheels less, and the car rotates harder into the corner. Do the opposite and
+it straightens up.
 
-It is structured as a **Hardware-in-the-Loop (HIL)** test rig: the control code
-is walled off so it only ever sees the same sensor data a real car's electronics
-would see. That means the exact same algorithm could be flashed onto a real ECU
-with no changes — the simulation is standing in for the car.
+This project builds the whole thing in software:
 
-## Why it's interesting
+- a **model of the car** and its tyres,
+- a **virtual driver** that steers and sets the speed around a real race track,
+- and the **control code** that does the torque vectoring.
 
-- **Three real control systems working together** — a model-based LQR steering
-  controller, a two-pass speed planner, and a PID-plus-feedforward yaw-moment
-  controller — tuned to drive a measured race track cleanly in **~27 seconds**.
-- **A genuine physics model**, not a toy: per-wheel nonlinear tyres, aerodynamic
-  downforce and drag, weight transfer under braking and cornering, and a grip
-  limit on every wheel.
-- **A hard software boundary** between "car" and "controller", enforced by the
-  build system — the same discipline used to ship code to real embedded hardware.
-- **Tested and measured, not eyeballed**: a headless lap evaluator and a unit-test
-  suite run in CI, so any change that makes the car slower or sends it off-track
-  fails the build automatically.
-- **Self-tuning**: an optimiser searches the control gains and rejects any setup
-  that only works at one exact point, keeping the car robust to small changes.
+They all run together 100 times a second. A visualiser then draws the car going
+round, which is what you see in the picture above.
 
-## The big idea: torque vectoring
+The code is split the way a real team would split it. The car, the driver, and the
+control unit are kept in separate files, and the control code is walled off so it
+only ever sees the same sensor readings a real car's electronics would get. That
+is what **Hardware-in-the-Loop (HIL)** means: the simulation stands in for the real
+car, so you can test and tune the control code without one.
 
-When you turn the steering wheel, you're asking the car to rotate at a certain
-rate — its **yaw rate**. A car with one engine can't do much if it rotates too
-slowly or too quickly. A car with four motors can: give the **outer** wheels a
-bit more push and the **inner** wheels a bit less, and the difference twists the
-car into the corner. Do the opposite and you straighten it up.
+## Why I think it is worth a look
 
-```
-        Understeer (nose runs wide)         Torque vectoring fixes it
-        ───────────────────────────         ─────────────────────────
-              wanted path                          wanted path
-                 ╱                                     ╱
-                ╱   actual path                       ╱  (now matches)
-        car →  ╱   ╱                          car →  ╱
-              ╱  ╱                                   ╱   outer wheel: more torque
-             ╱ ╱                                    ╱    inner wheel: less torque
-```
-
-The controller measures how fast the car is *actually* rotating, compares it to
-how fast it *should* be rotating, and continuously adjusts the left/right torque
-split to close the gap.
+- Three control systems work together to drive a measured race track in about
+  **27 seconds** with no mistakes: a steering controller, a speed planner, and the
+  torque-vectoring controller.
+- The car model is real, not a toy. It has per-wheel tyres that grip and then
+  slide, downforce and drag from the air, weight shifting under braking and
+  cornering, and a grip limit on every wheel.
+- The wall between "car" and "control code" is enforced by the build itself. If the
+  control code tries to reach into the simulation, the build breaks.
+- Nothing is judged by eye. A headless lap test and a set of unit tests run on every
+  push, and the build fails if the car gets slower or goes off the track.
+- The control gains are found by a search tool that throws away any setup that only
+  works at one exact point, so the result stays stable when things drift a little.
 
 ---
 
-## How the whole thing fits together
+## The idea behind torque vectoring
 
-Every tick (100 times a second) the data flows in one direction around a loop:
+When you turn the wheel, you are asking the car to rotate at a certain rate. This
+rate is called the **yaw rate**. A normal car with one engine cannot do much if it
+is rotating too slowly or too quickly for the corner. A car with four motors can fix
+it on the fly.
+
+Picture a left-hand corner from above. Without help, the car does not turn enough
+and drifts wide of where you wanted it to go:
 
 ```
-   ┌─────────────────────────────────────────────────────────────┐
-   │                                                               │
-   │   1. DRIVER  (motion_control.c)                               │
-   │      • looks at the racing line ahead                         │
-   │      • picks a steering angle (LQR)                           │
-   │      • picks a target speed from the upcoming corner          │
-   │      • asks for a total torque                                │
-   │                          │                                    │
-   │                          ▼   (only sensor data crosses here)  │
-   │   2. ECU  (torque_vectoring.c)                                │
-   │      • reads speed, yaw rate, steering, wheel speeds          │
-   │      • splits that total torque four ways to vector the car   │
-   │                          │                                    │
-   │                          ▼                                    │
-   │   3. CAR  (vehicle_model.c)                                   │
-   │      • applies four wheel torques + steering                  │
-   │      • computes tyre forces, updates position & speed         │
-   │                          │                                    │
-   │                          ▼                                    │
-   │   4. TRACK                                                    │
-   │      • advances along the lap, counts laps                    │
-   │                          │                                    │
-   └──────────────────────────┘  → STATE line streamed to the visualiser
+        wanted line ....  car runs wide
+                       .              `.
+                      .                  `.  <- car ends up out here
+        corner       .                     `.
+                    .   the car only
+       o  car  ->  .    turned this much
 ```
 
-The three roles live in **separate files on purpose**, mirroring how a real team
-splits "the car", "the driver", and "the control electronics".
+The fix is to give the **outer** wheels (here the right ones) more torque and the
+**inner** wheels less. The difference twists the car further into the corner and
+puts it back on the wanted line. The controller measures how fast the car is really
+rotating, compares it to how fast it should be rotating, and keeps adjusting the left
+and right torque to close the gap.
+
+You can see this in the real torque readings from one corner of the lap. The four
+lines start together on the straight, then fan apart through the corner as each
+wheel is given its own torque:
+
+<div align="center">
+<img src="docs/torque_corner.png" alt="The four wheel torques fanning apart through a corner" width="680">
+</div>
 
 ---
 
-## The maths, in plain language
+## How the loop fits together
 
-You don't need the equations to follow this — each one is one short idea.
+Every tick, which happens 100 times a second, the data moves through four stages in
+order. The output of each stage feeds the next, then the cycle repeats.
 
-### 1. The racing line — find the smoothest path through the cones
+```
+  STAGE 1   DRIVER          motion_control.c
+            Looks at the racing line ahead. Picks a steering angle.
+            Picks a target speed for the corner coming up. Asks for
+            a total amount of torque.
+                |
+                |   only sensor readings are allowed to cross this line
+                v
+  STAGE 2   CONTROL UNIT    torque_vectoring.c
+            Reads speed, yaw rate, steering, and wheel speeds. Splits
+            the total torque into four wheel torques to steer the car
+            with power.
+                |
+                v
+  STAGE 3   CAR             vehicle_model.c
+            Applies the four torques and the steering. Works out the
+            tyre forces and updates where the car is and how fast.
+                |
+                v
+  STAGE 4   TRACK
+            Moves the car along the lap and counts laps. Sends one
+            line of data to the visualiser, then the loop starts again.
+```
 
-The track is just a list of cone positions. Before the car moves, the planner
-builds the line it will follow, in three steps:
+---
 
-1. **Pair the cones up** — match each left cone to its nearest right cone to find
-   the "gates" the car must drive through.
-2. **Find the middle** — take the midpoint of each gate and space them evenly,
-   2.5 m apart, to get a centreline.
-3. **Smooth it out** — nudge the line side to side *inside* the cones to make it
-   as gently curved as possible. A straighter line through a corner means a wider
-   arc, and a wider arc means **you can take it faster**.
+## The maths, kept simple
 
-### 2. Corner speed — how fast can a corner be taken?
+You do not need the equations to follow this. Each one is a single short idea.
 
-A corner is a circle of some radius. The grip of the tyres caps how hard the car
-can pull sideways. That gives a simple speed limit for every point on the line:
+### 1. Find the racing line
 
-> **corner speed = √( grip × corner radius )**
+The track is just a list of cone positions. Before the car moves, the planner works
+out the line it will follow, in three steps:
 
-Tighter corner (small radius) → lower speed. This single rule, applied to the
-whole line, is what decides the lap time.
+1. **Pair the cones.** Match each left cone to its nearest right cone. Each pair is
+   a gate the car has to drive through.
+2. **Find the middle.** Take the midpoint of each gate and space the midpoints evenly,
+   2.5 metres apart. That gives a line down the middle of the track.
+3. **Smooth it.** Move the line side to side, but only inside the cones, to make it
+   bend as gently as possible. A straighter line through a corner is a wider arc, and
+   a wider arc can be taken faster.
 
-### 3. The speed plan — brake early, accelerate late
+### 2. How fast can a corner be taken
 
-Knowing the speed limit at every point isn't enough — you also have to **brake in
-time**. The planner makes two passes over the line:
+A corner is part of a circle. The grip of the tyres sets how hard the car can pull
+sideways. That gives a speed limit for every point on the line:
 
-- **Forward pass:** set each point to its corner-speed limit.
-- **Backward pass:** starting from each slow corner, walk *backwards* and pull the
-  speed down earlier and earlier, so the car is already slow enough by the time it
-  arrives. This is exactly how a human brakes *before* the corner, not in it.
+> **corner speed = square root of ( grip times corner radius )**
 
-### 4. Steering — the LQR controller
+A tighter corner has a smaller radius, so a lower speed. This one rule, used along
+the whole line, is what sets the lap time.
 
-This is the cleverest part. At every instant the controller knows two errors:
+### 3. Plan the speed, so the car brakes in time
 
-- **e₁** — how far the car is *sideways* off the line (cross-track error).
-- **e₂** — how much the car is *pointing the wrong way* (heading error).
+Knowing the speed limit at each point is not enough. The car also has to start
+braking early. The planner goes over the line twice:
 
-An **LQR** (Linear-Quadratic Regulator) is an optimal controller: given a model of
-how steering affects those two errors, it computes the *single best* steering
-angle that drives both errors to zero with the least wasted effort. Because the
-car behaves differently at 20 km/h than at 70 km/h, the controller **recomputes
-its gains as the speed changes**. On top of that it adds:
+- **Forward pass:** set every point to its corner speed limit.
+- **Backward pass:** start at each slow corner and walk backwards, pulling the speed
+  down earlier and earlier, so the car is already slow enough when it arrives.
 
-- a **feedforward** term that pre-bends the steering for the corner it can already
-  see coming, so it doesn't have to wait for an error to appear, and
-- a small **integrator** that wipes out any tiny, persistent offset.
+This is the same thing a driver does: brake before the corner, not in it. You can see
+it working in the real speed data below. The green line (actual speed) tracks the
+yellow line (the plan) closely, braking for every corner and pulling away on the
+straights:
 
-The result: the car stays within **~9 cm** of the ideal line, all the way round.
+<div align="center">
+<img src="docs/speed_trace.png" alt="Actual speed tracking the planned target speed over one lap" width="680">
+</div>
 
-### 5. Torque vectoring — the ECU's job
+### 4. Steering, with an LQR controller
 
-This is the algorithm that would run on the real car's control unit. Step by step:
+This is the clever part. At every moment the controller knows two things that are
+wrong:
 
-**a. How fast *should* the car be rotating?** From the steering angle and speed:
+- **how far the car is sideways off the line** (cross-track error),
+- **how much the car is pointing the wrong way** (heading error).
 
-> **wanted yaw rate = speed × tan(steering) / (wheelbase + understeer × speed²)**
+An **LQR** (Linear-Quadratic Regulator) is a controller that works out the single
+best steering angle to drive both of those to zero with the least wasted effort,
+using a model of how steering changes them. Because the car handles differently at
+low and high speed, the controller updates itself as the speed changes. On top of
+that it adds two helpers:
 
-The `speed²` term is honest about the fact that fast cars can't rotate as sharply
-as the geometry alone suggests.
+- a **feedforward** term that starts turning the wheel for the corner it can already
+  see, instead of waiting for an error to show up, and
+- a small term that wipes out any tiny offset that lingers.
 
-**b. How fast *is* it rotating?** Blend two sensors: the gyro (IMU), and a second
-estimate from the fact that the outer wheels spin faster than the inner ones in a
-corner. Two independent measurements are more trustworthy than one.
+The result is that the car stays within about **9 centimetres** of the ideal line
+the whole way round.
 
-**c. Pre-load the corner (feedforward).** The instant the steering moves, start
-shifting torque outward — don't wait for an error. This is the single biggest
-contributor to clean cornering.
+### 5. Torque vectoring, the control unit's job
+
+This is the code that would run on the real car. Here is what it does, step by step.
+
+**a. Work out how fast the car should be rotating.** From the steering angle and the
+speed:
+
+> **wanted yaw rate = speed times tan(steering) / (wheelbase + understeer factor times speed squared)**
+
+The speed-squared part is honest about the fact that a fast car cannot rotate as
+sharply as the steering angle alone suggests.
+
+**b. Work out how fast it really is rotating.** Use two sources and blend them: the
+gyro sensor, and a second guess from the fact that the outer wheels spin faster than
+the inner ones in a corner. Two readings are safer than one.
+
+**c. Get ahead of the corner.** The moment the steering moves, start shifting torque
+outward. Do not wait for an error to build up. This is the single biggest reason the
+cornering is clean.
 
 **d. Correct the rest with PID feedback:**
 
-> **bias = feedforward + Kp·error + Ki·∫error + Kd·(rate of change of error)**
+> **bias = feedforward + (Kp times error) + (Ki times the build-up of error) + (Kd times how fast the error is changing)**
 
-- **Kp** reacts to the error right now (and is reduced at high speed for stability).
-- **Ki** patches a small, stubborn error that never quite goes away.
-- **Kd** damps the turn-in so the car doesn't overshoot.
+- **Kp** reacts to the error right now. It is reduced at high speed to stay calm.
+- **Ki** removes a small error that never quite goes away.
+- **Kd** softens the turn-in so the car does not overshoot.
 
-**e. Split it across four wheels.** The base torque is shared equally; the
-vectoring bias is then split front/rear, with **more to the rear** (the rear tyres
-are doing less steering work, so they have more grip to spare for vectoring).
+**e. Split it four ways.** The base torque is shared equally. The vectoring part is
+split front and rear, with more given to the rear, because the rear tyres are doing
+less steering work and so have more grip to spare.
 
-**f. Respect the motors.** Each wheel is clamped to what its motor can deliver
-(+29.4 Nm driving, −100 Nm regenerative braking). If the outer wheel maxes out,
-the leftover is pushed onto the inner wheel so the *turning effect* is preserved
-as far as physically possible.
+**f. Stay within what the motors can do.** Each wheel is limited to what its motor can
+deliver (up to 29.4 Nm driving, down to 100 Nm of braking). If the outer wheel hits
+its limit, the leftover is pushed onto the inner wheel so the turning effect is kept
+as much as the motors allow.
 
-> One neat detail: torque vectoring works **during braking too**. The car has no
-> friction brakes — it slows using the motors in reverse (regen) — and the same
-> left/right split is applied while braking, so the car is steered with the motors
-> on corner entry as well as on corner exit.
+One nice detail: this works while braking too. The car has no brake discs. It slows by
+running the motors backwards. The same left and right split is used while braking, so
+the car is still steered with power on the way into a corner, not just on the way out.
 
-### 6. The car — the physics model
+### 6. The car and its tyres
 
-So the controller has something realistic to control, the car is a **3-degree-of-
-freedom model** (forward, sideways, and rotation) evaluated **per wheel**:
+So the controller has something realistic to control, the car is modelled with three
+freedoms (forward, sideways, and rotation), worked out for each wheel:
 
-- **Nonlinear tyres** (Pacejka model): grip rises then *falls off* as you ask too
-  much of a tyre — the real reason cars slide.
-- **Aerodynamics**: downforce presses the car into the track (more grip at speed),
-  drag slows it on the straights.
-- **Weight transfer**: braking throws weight forward, cornering throws it
-  sideways, changing how much grip each individual wheel has.
-- **A grip limit per wheel** (the "friction circle"): a wheel can't do maximum
-  cornering *and* maximum acceleration at once — spend grip on one and you have
-  less for the other.
+- **Tyres that grip then slide.** Grip rises as you lean on a tyre, then falls off when
+  you ask too much. That is the real reason cars slide.
+- **Air.** Downforce presses the car down for more grip at speed. Drag slows it on the
+  straights.
+- **Weight moving around.** Braking throws weight onto the front, cornering onto the
+  outside, and that changes how much grip each wheel has.
+- **A grip limit per wheel.** A wheel cannot do its hardest cornering and its hardest
+  acceleration at the same time. Spend grip on one and there is less for the other.
 
-The numbers match a real **Formula Student M25 car**: 260 kg, 1.55 m wheelbase,
-four 29.4 Nm motors through a 15.47:1 gearbox.
+The numbers match a real Formula Student car (the M25): 260 kg, 1.55 m wheelbase, four
+29.4 Nm motors through a 15.47 to 1 gearbox.
 
 ---
 
 ## See it run
 
-**1. Build the C simulation** (needs `gcc` and `make`; use MSYS2 on Windows):
+**1. Build the C simulation** (needs `gcc` and `make`; on Windows use MSYS2):
 
 ```
 make
 ```
 
-This produces `HIL_Firmware/build/hil_sim`.
+This builds `HIL_Firmware/build/hil_sim`.
 
 **2. Run the live visualiser** (needs Python 3 and pygame):
 
@@ -240,47 +263,47 @@ pip install pygame
 python visualiser.py
 ```
 
-The visualiser launches the simulation itself and opens a window with the track
-on the left and a live telemetry panel on the right — speed vs. target, yaw rate,
-an understeer/oversteer bar, a slip gauge, a G-G (friction-circle) plot, and a bar
-chart of the four wheel torques.
+The visualiser starts the simulation itself and opens a window. The track is on the
+left and a live data panel is on the right, with speed against target, yaw rate, an
+understeer and oversteer bar, a slip gauge, a friction-circle plot, and a bar chart of
+the four wheel torques.
 
-| Key | Action |
-|-----|--------|
-| `T` | Toggle torque vectoring **on / off** — watch the lap time change |
-| `[` `]` | Decrease / increase the TV gain |
-| `M` | Map view ↔ follow-cam |
+| Key | What it does |
+|-----|--------------|
+| `T` | Turn torque vectoring on or off, and watch the lap time change |
+| `[` `]` | Lower or raise the torque-vectoring gain |
+| `M` | Switch between the whole-track map and a camera that follows the car |
 | `F` | Fullscreen |
-| `Q` / `Esc` | Quit |
+| `Q` or `Esc` | Quit |
 
-**Things worth trying:** press `T` to turn torque vectoring off and watch the four
-torque bars go equal and the lap time get worse; press `]` to crank the gain and
-watch the car get twitchy. The header GIF was made with `python tools/make_track_gif.py`.
+Worth trying: press `T` to turn torque vectoring off, and watch the four torque bars
+go equal while the lap time gets worse. Press `]` to turn the gain up high and watch
+the car get twitchy.
+
+The header GIF and the two plots above are made from real sim data with
+`python tools/make_track_gif.py` and `python tools/make_plots.py`.
 
 ---
 
-## How it's tested
+## How it is tested
 
-This isn't judged by eye. Every change is measured.
+Changes are measured, not guessed at.
 
 ```
-make test     # unit tests: signs, clamping, anti-windup, the HIL boundary
-make eval     # drives a full headless lap and reports the metrics
+make test     unit tests: signs, limits, anti-windup, and the HIL wall
+make eval     drives one full lap with no window and prints the numbers
 ```
 
-`make eval` runs the entire driver → ECU → car loop over the real track as fast as
-the machine allows and prints a lap report ending in a machine-readable `RESULT`
-line. A good change keeps **off-track ticks at zero**, **completes the lap**, and
-doesn't make the lap slower or the line sloppier. **CI runs both on every push and
-fails the build if the car can't get round** — so a control regression can't slip
-in unnoticed.
+`make eval` runs the whole driver, control unit, and car loop over the real track as
+fast as the machine can, and prints a lap report. A good change keeps the car on the
+track, finishes the lap, and does not make the lap slower or the line worse. The same
+two commands run in CI on every push, and the build fails if the car cannot get round.
+So a control mistake cannot slip in without someone noticing.
 
-The control gains are tuned by `tools/tool_smart_sweep_lqr.py`, an optimiser that
-scores each candidate setup by its **worst nearby neighbour**, not its best case.
-That deliberately rejects "knife-edge" tunes that only lap cleanly at one exact
-point — the kind that look great in a benchmark and fail the moment anything
-drifts. The shipped gains lap **two** different tracks cleanly and survive ±3%
-jitter on every parameter.
+The control gains are found by `tools/tool_smart_sweep_lqr.py`. It scores each setup by
+its **worst nearby neighbour**, not its best case, which throws away setups that only
+work at one exact point and fall apart the moment anything drifts. The shipped gains
+drive two different tracks cleanly and survive a 3 percent wobble on every parameter.
 
 ---
 
@@ -288,59 +311,57 @@ jitter on every parameter.
 
 ```
 HIL-Torque-Vectoring/
-├── Makefile                    Builds the sim, tests, and tools
-├── visualiser.py               Live pygame window (launches the sim)
-│
-├── shared/                     Code BOTH the car and the ECU may use
-│   ├── tv_interface.h          The data types that cross the HIL boundary
-│   ├── vehicle_config.h        Physical constants (mass, geometry, tyres)
-│   └── parameters_config.h     Tunable parameters (speed budget, TV gains)
-│
-├── HIL_Firmware/               The "car" side — the simulation
-│   └── src/
-│       ├── main.c              The 100 Hz sim loop; streams STATE lines
-│       ├── vehicle_model.c     Per-wheel physics
-│       ├── path_planning.c     Builds the racing line from the cones
-│       ├── motion_control.c    The virtual driver (steering + speed)
-│       ├── lqr_steer.c         The model-based LQR steering law
-│       └── track_parser.c      Loads a cone layout, selectable at runtime
-│
-├── ECU_Firmware/               The "controller" side — only sees sensor data
-│   └── src/torque_vectoring.c  The torque-vectoring algorithm
-│
-├── tracks/                     Cone layouts as YAML (fsg2024, fse2024)
-├── tests/                      Unit tests  (make test)
-└── tools/                      Lap evaluator, optimiser, GIF maker, CI helpers
+  Makefile                    Builds the sim, the tests, and the tools
+  visualiser.py               Live window. Starts the sim and draws it.
+
+  shared/                     Code that BOTH the car and the control unit can use
+    tv_interface.h            The data that crosses the HIL wall
+    vehicle_config.h          Physical constants (mass, size, tyres)
+    parameters_config.h       Tunable settings (speed budget, TV gains)
+
+  HIL_Firmware/               The car side, the simulation
+    src/main.c                The 100 Hz loop. Sends data out.
+    src/vehicle_model.c       The per-wheel physics
+    src/path_planning.c       Builds the racing line from the cones
+    src/motion_control.c      The virtual driver (steering and speed)
+    src/lqr_steer.c           The LQR steering law
+    src/track_parser.c        Loads a cone layout, chosen at runtime
+
+  ECU_Firmware/               The control side. Only sees sensor data.
+    src/torque_vectoring.c    The torque-vectoring algorithm
+
+  tracks/                     Cone layouts as YAML (fsg2024, fse2024)
+  tests/                      Unit tests (make test)
+  tools/                      Lap test, gain search, GIF and plot makers, CI helpers
 ```
 
-**The HIL boundary is enforced by the build.** `torque_vectoring.c` is compiled
-with *only* its own header and `shared/` on the include path, so it physically
-cannot reach into the simulation's code — exactly as it couldn't on real hardware.
+The HIL wall is enforced by the build. `torque_vectoring.c` is compiled with only its
+own header and `shared/` available, so it cannot reach into the simulation's code, just
+as it could not on real hardware.
 
-Tracks are swappable at runtime: `TRACK=fse2024 python visualiser.py` (or
-`TRACK=fse2024 make eval`). Drop a new `tracks/<name>.yaml` in and rebuild to add
+Tracks can be swapped at runtime: `TRACK=fse2024 python visualiser.py`, or
+`TRACK=fse2024 make eval`. Drop a new `tracks/<name>.yaml` file in and rebuild to add
 your own.
 
 ---
 
-## What's deliberately left out
+## What is left out on purpose
 
-To stay readable rather than be a full commercial simulator, this models the
-control problem honestly but skips: suspension travel and body roll, motor and
-inverter electrical dynamics, battery state, and separate friction brakes (the car
-brakes on regen only). It's built to show how the control logic works and to test
-that the ECU behaves correctly — not to predict real-world lap times to the
-millisecond.
+To keep it readable rather than make a full commercial simulator, this leaves out
+suspension movement and body roll, the electrical behaviour of the motors and
+inverters, the battery, and separate brake discs (the car brakes on the motors only).
+It is built to show how the control logic works and to check that the control unit
+behaves, not to predict real lap times to the millisecond.
 
 ---
 
 ## Platform notes
 
-- **Visualiser:** Python 3 + pygame (`pip install pygame`).
-- **Linux / macOS:** builds with any `gcc`.
+- **Visualiser:** Python 3 and pygame (`pip install pygame`).
+- **Linux and macOS:** builds with any `gcc`.
 - **Windows:** use [MSYS2](https://www.msys2.org) with the MinGW-w64 toolchain:
   ```
   pacman -S mingw-w64-x86_64-gcc make
   ```
-  Build with `make` in the MinGW 64-bit shell, then run `python visualiser.py`
-  from any terminal with Python on its PATH.
+  Build with `make` in the MinGW 64-bit shell, then run `python visualiser.py` from any
+  terminal that has Python on its PATH.
