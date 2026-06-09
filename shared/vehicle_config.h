@@ -1,6 +1,8 @@
 #ifndef VEHICLE_CONFIG_H
 #define VEHICLE_CONFIG_H
 
+#include <math.h>   /* sqrtf, for the grip helpers below */
+
 /* =========================================================================
  * shared/vehicle_config.h  -  M25 vehicle parameters
  *
@@ -73,5 +75,51 @@
 #define CDA          1.8f    /* drag coefficient                            */
 #define AERO_AREA    1.0f    /* reference area, m²                         */
 #define AIR_DENSITY  1.29f   /* kg/m³                                      */
+
+
+/* ---- Speed-dependent lateral grip (downforce) ----
+ *
+ * The tyre's lateral grip is not constant: aero downforce adds normal load that
+ * scales with v^2, so the car can corner harder the faster it goes. The line
+ * optimiser and the on-car speed planner both need this, or they draw/drive a
+ * line tuned for the gripless low-speed car and leave time on the table in every
+ * fast corner (the error reaches ~40% of grip near 18 m/s on this car).
+ *
+ *   a_lat_max(v) = base + AERO_GRIP_COEF * v^2
+ *
+ * where `base` is the caller's low-speed (zero-downforce) lateral budget
+ * (MAX_LATERAL_ACCEL_MS2 / PP_GRIP_ACCEL) and the aero term is the extra grip
+ * from downforce. Keeping the downforce as an additive BONUS on top of the
+ * existing flat budget means all existing low-speed tuning (notably the hairpin,
+ * where there is no downforce) is unchanged; only the fast corners gain grip.
+ *
+ *   AERO_GRIP_COEF = MU_GRIP * (0.5 * rho * CLA * AERO_AREA) / m
+ *                  = extra m/s^2 of lateral grip per (m/s)^2 of speed.
+ */
+#define AERO_GRIP_COEF \
+    (MU_GRIP * 0.5f * AIR_DENSITY * CLA * AERO_AREA / MASS_KG)
+
+/* Speed-dependent lateral grip, m/s^2, for a given low-speed base budget. */
+static inline float lateral_grip_accel(float base, float v)
+{
+    return base + AERO_GRIP_COEF * v * v;
+}
+
+/*
+ * Closed-form apex speed: the largest v that satisfies v^2*kappa <= a_lat_max(v)
+ * with the speed-dependent grip above. Solving
+ *     v^2 * kappa = base + AERO_GRIP_COEF * v^2
+ *  => v^2 (kappa - AERO_GRIP_COEF) = base
+ *  => v = sqrt( base / (kappa - AERO_GRIP_COEF) )
+ * No iteration needed. If kappa <= AERO_GRIP_COEF the corner is so open that
+ * downforce alone holds any speed (radius > ~56 m here) - return v_cap. */
+static inline float apex_speed(float base, float kappa, float v_cap)
+{
+    if (kappa <= 1e-4f) return v_cap;
+    float denom = kappa - AERO_GRIP_COEF;
+    if (denom <= 1e-4f) return v_cap;          /* downforce-dominated corner */
+    float v = sqrtf(base / denom);
+    return (v < v_cap) ? v : v_cap;
+}
 
 #endif /* VEHICLE_CONFIG_H */

@@ -72,10 +72,38 @@ the source list from the Makefile and the env set inline on the same line:
 
 These are things that are easy to get wrong and slow to rediscover.
 
-- **All tunable parameters live in `shared/parameters_config.h`.** The car's
-  physical constants (mass, geometry, tyre coefficients) are separate, in
-  `shared/vehicle_config.h`. Both sides include the config; the highest-leverage
-  gains are `#ifndef`-wrapped so `tools/tool_smart_sweep_lqr.py` and `-D` overrides work.
+- **The track layout is selectable at runtime via the `TRACK` environment
+  variable** (default `fsg2024`). The cone layouts live in `tracks/*.yaml` (the
+  source of truth); `tools/gen_tracks.py` turns every YAML into
+  `HIL_Firmware/include/track_data.h` at build time (the Makefile runs it before
+  compiling — `track_data.h` is generated, do not edit it by hand).
+  `HIL_Firmware/src/track_parser.c` includes the generated data and `track_init()`
+  picks a layout by name, so every entry point (sim, `make eval`, perf) and the
+  visualiser switch with no call-site changes — e.g. `TRACK=fse2024 make eval`.
+  Add a track by dropping another `tracks/<name>.yaml` in and rebuilding.
+  (`gen_tracks.py --check` fails if the committed header is stale — useful in CI.)
+
+- **The shipped gains are a single shared set tuned to lap BOTH `fsg2024` and
+  `fse2024` cleanly** (0 off-track, robust to ±3% jitter), not the fsg2024-only
+  optimum. It's a min-max compromise: forcing `fse2024`'s tighter corners clean
+  costs `fsg2024` ~0.7 s vs. its solo best (fsg2024 ~27.1 s, fse2024 ~22.1 s).
+  Re-tune the shared set with `tools/tool_smart_sweep_lqr_multi.py` (the
+  multi-track variant of `tool_smart_sweep_lqr.py`: same adaptive search and
+  robust scoring, but it evaluates every candidate on each track in its
+  `TRACKS` list and scores by the worst track). After tuning, always confirm 0
+  off-track on **every** track, e.g. `TRACK=fse2024 make eval` as well as the
+  default. If you only care about one layout, `tool_smart_sweep_lqr.py` still
+  optimises that single track.
+
+- **Most tunable parameters live in `shared/parameters_config.h`** (speed
+  budget, throttle/brake, TV gains, cone safety net). Two sets live with the code
+  they belong to: the **LQR steering cost weights** (`LQR_Q_*`, `LQR_R`,
+  `LQR_KI`, `LQR_I_MAX`) in `HIL_Firmware/src/lqr_steer.c`, and the **racing-line
+  shape** (`RACING_MARGIN`, `PP_GRIP_ACCEL`, `PP_MIN_RADIUS_M`) in
+  `HIL_Firmware/src/path_planning.c`. The car's physical constants (mass,
+  geometry, tyre coefficients) are separate again, in `shared/vehicle_config.h`.
+  The highest-leverage gains everywhere are `#ifndef`-wrapped so
+  `tools/tool_smart_sweep_lqr.py` and `-D` overrides work.
 
 - **Tools live in `tools/`, not `tests/`, and are named `tool_*`**
   (`tool_eval_lap.c`, `tool_perf_sim.c`, `tool_smart_sweep_lqr.py` /
@@ -102,14 +130,16 @@ These are things that are easy to get wrong and slow to rediscover.
   brakes; the car brakes with motor regen only.
 
 - **The lap-time lever is corner speed (`MAX_LATERAL_ACCEL_MS2`), bounded by the
-  racing line.** The LQR tracker holds the line tightly enough to carry nearly
-  the full grip budget (~13.7 m/s^2) on the feasibility-aware racing line, for a
-  clean ~26.5 s lap. The budget, the line (`PP_GRIP_ACCEL`, `RACING_MARGIN`,
-  `PP_MIN_RADIUS_M` in `path_planning.c`), and the LQR cost weights are coupled —
-  raise the budget and the line must open the hairpin (`PP_MIN_RADIUS_M`) and add
-  apex clearance (`RACING_MARGIN`) or the car saturates the steering and stalls.
-  Re-tune them together (use `tools/tool_smart_sweep_lqr.py`) and always confirm 0
-  off-track with `make eval`.
+  racing line.** The LQR tracker holds the line tightly enough to carry most of
+  the grip budget on the feasibility-aware racing line (shared config: fsg2024
+  ~27.1 s, fse2024 ~22.1 s, both clean). The budget, the line (`PP_GRIP_ACCEL`,
+  `RACING_MARGIN`, `PP_MIN_RADIUS_M` in `path_planning.c`), and the LQR cost
+  weights are coupled — raise the budget and the line must open the hairpin
+  (`PP_MIN_RADIUS_M`) and add apex clearance (`RACING_MARGIN`) or the car
+  saturates the steering and stalls. Re-tune them together (use
+  `tools/tool_smart_sweep_lqr_multi.py` for the shared two-track set, or
+  `tool_smart_sweep_lqr.py` for one track) and always confirm 0 off-track with
+  `make eval` on every track.
 
 - **The TV controller keeps internal PID state** (static integrator and previous
   error). Call `torque_vectoring_reset()` between independent runs or test cases.

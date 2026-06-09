@@ -12,7 +12,7 @@
 #include <math.h>
 
 #include "../HIL_Firmware/include/vehicle_model.h"
-#include "../HIL_Firmware/include/track.h"
+#include "../HIL_Firmware/include/track_parser.h"
 #include "../HIL_Firmware/include/motion_control.h"
 #include "../shared/tv_interface.h"
 #include "../ECU_Firmware/include/torque_vectoring.h"
@@ -58,6 +58,10 @@ int main(int argc, char **argv)
     float ih = atan2f(track.points[1].y - track.points[0].y,
                       track.points[1].x - track.points[0].x);
     vehicle_model_init(&state, track.points[0].x, track.points[0].y, ih);
+
+    /* Clean controller state for this run (driver + LQR steering + ECU yaw PID). */
+    motion_control_reset();
+    torque_vectoring_reset();
 
     const float R2W = (2.0f * 3.14159265358979f) / (GEAR_RATIO * 60.0f);
     int   start_lap = track.lap_count;

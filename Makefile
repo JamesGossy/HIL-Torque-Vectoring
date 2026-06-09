@@ -1,5 +1,10 @@
 export TMPDIR := /tmp
 
+# `all` is the default goal regardless of rule order (the generated-header rule
+# below would otherwise become the first target, so a bare `make` would only
+# regenerate track_data.h and stop).
+.DEFAULT_GOAL := all
+
 CC     = gcc
 CFLAGS = -Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=199309L
 
@@ -20,6 +25,7 @@ TEST_VM   = $(HIL_BUILD)/test_vehicle_model$(EXE_EXT)
 TEST_PP   = $(HIL_BUILD)/test_path_planning$(EXE_EXT)
 TEST_MC   = $(HIL_BUILD)/test_motion_control$(EXE_EXT)
 TEST_LQR  = $(HIL_BUILD)/test_lqr$(EXE_EXT)
+TEST_INT  = $(HIL_BUILD)/test_integration$(EXE_EXT)
 
 HIL_FLAGS = $(CFLAGS) \
             -I HIL_Firmware/include \
@@ -30,12 +36,23 @@ ECU_FLAGS = $(CFLAGS) \
             -I ECU_Firmware/include \
             -I shared
 
+# Track cone data is generated from tracks/*.yaml (the source of truth) into
+# HIL_Firmware/include/track_data.h by tools/gen_tracks.py, which runs before any
+# compile. track_parser.c includes the generated header. Editing a YAML (or
+# adding tracks/<name>.yaml) regenerates it on the next build.
+PYTHON     ?= python
+TRACK_YAML  = $(wildcard tracks/*.yaml)
+TRACK_DATA  = HIL_Firmware/include/track_data.h
+
+$(TRACK_DATA): $(TRACK_YAML) tools/gen_tracks.py
+	$(PYTHON) tools/gen_tracks.py
+
 # Steering is the model-based LQR law (HIL_Firmware/src/lqr_steer.c); the tuned
 # gains are the in-source defaults (from the robustness-aware sweep, see
-# tools/tool_smart_sweep_lqr.py), so no -D overrides are needed for a clean ~26.5 s lap.
+# tools/tool_smart_sweep_lqr.py), so no -D overrides are needed for a clean lap.
 HIL_SRCS = HIL_Firmware/src/main.c \
            HIL_Firmware/src/vehicle_model.c \
-           HIL_Firmware/src/track.c \
+           HIL_Firmware/src/track_parser.c \
            HIL_Firmware/src/path_planning.c \
            HIL_Firmware/src/motion_control.c \
            HIL_Firmware/src/lqr_steer.c \
@@ -61,11 +78,21 @@ LQR_SRCS = tests/test_lqr.c \
 TV_SRCS = tests/test_tv.c \
           ECU_Firmware/src/torque_vectoring.c
 
+# Integration test: the full driver -> ECU -> vehicle -> track loop, so it pulls
+# in every module the sim wires together.
+INT_SRCS = tests/test_integration.c \
+           HIL_Firmware/src/motion_control.c \
+           HIL_Firmware/src/vehicle_model.c \
+           HIL_Firmware/src/track_parser.c \
+           HIL_Firmware/src/path_planning.c \
+           HIL_Firmware/src/lqr_steer.c \
+           ECU_Firmware/src/torque_vectoring.c
+
 EVAL     = $(HIL_BUILD)/eval_lap$(EXE_EXT)
 EVAL_SRCS = tools/tool_eval_lap.c \
             HIL_Firmware/src/motion_control.c \
             HIL_Firmware/src/vehicle_model.c \
-            HIL_Firmware/src/track.c \
+            HIL_Firmware/src/track_parser.c \
             HIL_Firmware/src/path_planning.c \
             HIL_Firmware/src/lqr_steer.c \
             ECU_Firmware/src/torque_vectoring.c
@@ -74,20 +101,20 @@ PERF      = $(HIL_BUILD)/perf_sim$(EXE_EXT)
 PERF_SRCS = tools/tool_perf_sim.c \
             HIL_Firmware/src/motion_control.c \
             HIL_Firmware/src/vehicle_model.c \
-            HIL_Firmware/src/track.c \
+            HIL_Firmware/src/track_parser.c \
             HIL_Firmware/src/path_planning.c \
             HIL_Firmware/src/lqr_steer.c \
             ECU_Firmware/src/torque_vectoring.c
 
 .PHONY: all run eval test perf clean
 
-all: $(HIL_BUILD) $(ECU_BUILD) $(HIL_SIM) $(ECU_OBJ)
+all: $(TRACK_DATA) $(HIL_BUILD) $(ECU_BUILD) $(HIL_SIM) $(ECU_OBJ)
 
 $(HIL_BUILD) $(ECU_BUILD):
 	mkdir -p $@
 
-# HIL sim objects
-$(HIL_BUILD)/%.o: HIL_Firmware/src/%.c | $(HIL_BUILD)
+# HIL sim objects (track_parser.o needs the generated track_data.h)
+$(HIL_BUILD)/%.o: HIL_Firmware/src/%.c $(TRACK_DATA) | $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -c -o $@ $<
 
 $(HIL_BUILD)/torque_vectoring.o: ECU_Firmware/src/torque_vectoring.c | $(HIL_BUILD)
@@ -101,12 +128,13 @@ $(HIL_SIM): $(HIL_OBJS)
 $(ECU_OBJ): ECU_Firmware/src/torque_vectoring.c | $(ECU_BUILD)
 	$(CC) $(ECU_FLAGS) -c -o $@ $<
 
-test: $(HIL_BUILD)
+test: $(TRACK_DATA) $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(TEST_TV) $(TV_SRCS) -lm && $(TEST_TV)
 	$(CC) $(HIL_FLAGS) -o $(TEST_VM) $(VM_SRCS) -lm && $(TEST_VM)
 	$(CC) $(HIL_FLAGS) -o $(TEST_PP) $(PP_SRCS) -lm && $(TEST_PP)
 	$(CC) $(HIL_FLAGS) -o $(TEST_MC) $(MC_SRCS) -lm && $(TEST_MC)
 	$(CC) $(HIL_FLAGS) -o $(TEST_LQR) $(LQR_SRCS) -lm && $(TEST_LQR)
+	$(CC) $(HIL_FLAGS) -o $(TEST_INT) $(INT_SRCS) -lm && $(TEST_INT)
 
 run: all
 	$(HIL_SIM)
@@ -114,12 +142,12 @@ run: all
 # Headless lap evaluation: runs the full motion-control -> ECU -> vehicle loop
 # as fast as possible and prints lap-tracking metrics (mean/worst cross-track
 # error, cone contacts, lap time). Use it to catch driver regressions.
-eval: $(HIL_BUILD)
+eval: $(TRACK_DATA) $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(EVAL) $(EVAL_SRCS) -lm && $(EVAL)
 
 # Compute-speed benchmark: runs the tick loop flat out for 1 wall-clock second
 # and reports throughput. Pass a different budget as arg 1 (e.g. perf_sim 5).
-perf: $(HIL_BUILD)
+perf: $(TRACK_DATA) $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(PERF) $(PERF_SRCS) -lm && $(PERF)
 
 clean:

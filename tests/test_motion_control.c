@@ -11,7 +11,7 @@
 #include <string.h>
 
 #include "../HIL_Firmware/include/motion_control.h"
-#include "../HIL_Firmware/include/track.h"
+#include "../HIL_Firmware/include/track_parser.h"
 #include "../HIL_Firmware/include/vehicle_model.h"
 
 /* ---- Minimal test framework ---- */

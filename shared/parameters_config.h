@@ -66,7 +66,7 @@
  * rises, or the car saturates the steering and stalls at the hairpin). Re-tune
  * them together and always confirm 0 off-track with `make eval`. */
 #ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2   13.7214f
+#define MAX_LATERAL_ACCEL_MS2   10.9412f
 #endif
 
 #define MAX_BRAKE_DECEL_MS2     5.6f   /* max straight-line braking decel, m/s^2 */
@@ -90,11 +90,21 @@
  * apex drift); lowering it brakes ever earlier (smoother but slower). Confirm 0
  * off-track with `make eval` after changing it. */
 #ifndef GG_ACCEL_MS2
-#define GG_ACCEL_MS2            7.7134f
+#define GG_ACCEL_MS2            6.7782f
 #endif
 
 #define SPEED_PLAN_HORIZON_M   80.0f   /* how far ahead to scan for corners, m */
 #define SPEED_PLAN_STEPS        40     /* max waypoints in the scan */
+
+/* Fraction of the speed-dependent downforce grip the ON-CAR planner is allowed
+ * to use for corner-entry speed. The racing LINE is shaped for the full
+ * downforce grip; the planner stays more conservative so the tracker keeps a
+ * margin and does not wash wide and saturate the steering. 0 = old flat budget
+ * (no downforce on the car); 1 = full downforce (no margin). Tune with the line
+ * and the LQR weights via tools/tool_smart_sweep_lqr.py. */
+#ifndef PLANNER_DOWNFORCE_FRAC
+#define PLANNER_DOWNFORCE_FRAC  0.5586f
+#endif
 
 
 /* ============================================================ */
@@ -121,7 +131,7 @@
  * on a track that is ~80% corners. Lowering it powers out more weakly (slower
  * exits); raising it powers wide off the line (off-track). */
 #ifndef LAT_GRIP_REF_MS2
-#define LAT_GRIP_REF_MS2   14.1014f
+#define LAT_GRIP_REF_MS2   14.4066f
 #endif
 
 /* Throttle integral, to trim the steady-state speed deficit on corner exit.
@@ -153,7 +163,7 @@
  * at runtime with [ and ]. Ki and Kd are fractions of it, so the loop scales
  * together when you change this. */
 #ifndef KP_YAW_DEFAULT
-#define KP_YAW_DEFAULT     48.5755f
+#define KP_YAW_DEFAULT     48.4545f
 #endif
 
 /* Integral and derivative gains, as a fraction of the master gain. I erases the
@@ -169,7 +179,7 @@
  * differential from the cornering demand so the yaw moment is there before any
  * error develops. */
 #ifndef TV_KFF
-#define TV_KFF             13.8448f
+#define TV_KFF             11.4068f
 #endif
 
 /* Cap on the bias the integral term alone can contribute, Nm. */
@@ -192,7 +202,7 @@
 /* Front/rear split of the yaw-moment differential. 0.5 gives an even split;
  * the sweep settled near 0.46 (a slight front bias) for this car/line. */
 #ifndef TV_REAR_SHARE
-#define TV_REAR_SHARE      0.4602f
+#define TV_REAR_SHARE      0.6122f
 #endif
 
 /* Weight on the wheel-speed yaw estimate when fused with the IMU. 0 = IMU only,

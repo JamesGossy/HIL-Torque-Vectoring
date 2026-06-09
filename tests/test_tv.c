@@ -221,25 +221,32 @@ static void test_zero_gain(void)
 /*
  * Speed-dependent gain: at high speed the effective Kp is lower, so the bias
  * is smaller than at the reference speed with the same yaw error.
+ *
+ * This must be checked in the UNSATURATED regime, or both cases just clamp at
+ * max_bias and read equal. A small yaw error and a small explicit gain keep both
+ * points linear, so the test isolates the speed scaling itself rather than the
+ * shipped KP_YAW_DEFAULT (which is large enough to saturate at these speeds).
  */
 static void test_speed_gain_scaling(void)
 {
     /* No steering so desired_yaw_rate=0; error comes purely from yaw_rate offset.
      * Equal wheel speeds mean r_wheels=0, so yaw_rate_est = 0.75 * yaw_rate.
-     * Setting yaw_rate = -0.5 gives yaw_error = 0 - 0.75*(-0.5) = +0.375 at
-     * both speeds, isolating the speed-dependent gain effect. */
+     * A tiny yaw_rate = -0.1 gives yaw_error = +0.075 (just past the deadband),
+     * small enough that neither speed saturates the bias clamp. */
     SensorData sLow  = straight(6.0f);
     SensorData sHigh = straight(24.0f);
-    sLow.yaw_rate  = -0.5f;
-    sHigh.yaw_rate = -0.5f;
+    sLow.yaw_rate  = -0.1f;
+    sHigh.yaw_rate = -0.1f;
 
+    const float kp = 5.0f;   /* small gain: keep both cases below max_bias */
     WheelTorques tLow, tHigh;
     torque_vectoring_reset();
-    torque_vectoring_update(&sLow,  40.0f, KP_YAW_DEFAULT, &tLow);
+    torque_vectoring_update(&sLow,  40.0f, kp, &tLow);
     torque_vectoring_reset();
-    torque_vectoring_update(&sHigh, 40.0f, KP_YAW_DEFAULT, &tHigh);
+    torque_vectoring_update(&sHigh, 40.0f, kp, &tHigh);
 
-    /* At low speed effective_kp = Kp*(12/6)=2*Kp; at high = Kp*(12/24)=0.5*Kp */
+    /* At low speed effective_kp = kp*(12/6)=2*kp; at high = kp*(12/24)=0.5*kp,
+     * so the low-speed bias must be the larger (neither clamped). */
     float bias_low  = tLow.fr  - tLow.fl;
     float bias_high = tHigh.fr - tHigh.fl;
     ASSERT(bias_low > bias_high);

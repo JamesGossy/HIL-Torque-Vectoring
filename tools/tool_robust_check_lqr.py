@@ -7,18 +7,19 @@ import os, random, subprocess, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "HIL_Firmware", "build", "eval_roblqr.exe")
 SRCS = ["tools/tool_eval_lap.c", "HIL_Firmware/src/motion_control.c",
-        "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track.c",
+        "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track_parser.c",
         "HIL_Firmware/src/path_planning.c", "HIL_Firmware/src/lqr_steer.c",
         "ECU_Firmware/src/torque_vectoring.c"]
 INC = ["-I", "HIL_Firmware/include", "-I", "shared", "-I", "ECU_Firmware/include"]
 
-# LQR + recommended companion settings (the clean 27.03 s config).
+# Current in-source defaults (the clean ~25.8 s downforce-aware config).
 BEST = {
- "MAX_LATERAL_ACCEL_MS2":13.7214,"PP_GRIP_ACCEL":13.6871,"RACING_MARGIN":0.2756,
- "PP_MIN_RADIUS_M":6.2565,"GG_ACCEL_MS2":7.7134,"LAT_GRIP_REF_MS2":14.1014,
- "KP_YAW_DEFAULT":48.5755,"TV_KFF":13.8448,"TV_REAR_SHARE":0.4602,
- "LQR_Q_E1":11.2975,"LQR_Q_E1D":1.4164,"LQR_Q_E2":14.2220,"LQR_Q_E2D":0.8434,
- "LQR_R":7.7125,"LQR_KI":5.4654,"LQR_I_MAX":0.5629}
+ "MAX_LATERAL_ACCEL_MS2":14.0433,"PP_GRIP_ACCEL":11.1584,"RACING_MARGIN":0.2686,
+ "PP_MIN_RADIUS_M":6.5000,"GG_ACCEL_MS2":7.8831,"PLANNER_DOWNFORCE_FRAC":0.1085,
+ "LAT_GRIP_REF_MS2":15.6526,
+ "KP_YAW_DEFAULT":86.7214,"TV_KFF":12.4083,"TV_REAR_SHARE":0.6017,
+ "LQR_Q_E1":10.1899,"LQR_Q_E1D":0.3000,"LQR_Q_E2":9.7728,"LQR_Q_E2D":0.1229,
+ "LQR_R":3.8399,"LQR_KI":5.8300,"LQR_I_MAX":0.3350}
 NAMES = list(BEST)
 
 def ev(cfg):

@@ -1,7 +1,7 @@
 #ifndef MOTION_CONTROL_H
 #define MOTION_CONTROL_H
 
-#include "track.h"
+#include "track_parser.h"
 #include "vehicle_model.h"
 #include "../../shared/parameters_config.h"
 
@@ -32,5 +32,12 @@
  */
 float motion_control_update(VehicleState *state, const Track *track,
                             float *out_target_speed);
+
+/*
+ * Reset the driver's internal state (progress index, throttle integrator) and
+ * the LQR steering state it owns. Call before an independent run so no state
+ * leaks in from a previous one; the sim entry points do this after track_init().
+ */
+void motion_control_reset(void);
 
 #endif /* MOTION_CONTROL_H */
