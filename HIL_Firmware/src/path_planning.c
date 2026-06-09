@@ -1,6 +1,6 @@
 #include "../include/path_planning.h"
-#include "parameters_config.h"   /* MAX_LATERAL_ACCEL_MS2 (self-consistent grip) */
-#include "vehicle_config.h"      /* apex_speed() / lateral_grip_accel() (downforce) */
+#include "parameters_config.h" /* MAX_LATERAL_ACCEL_MS2 (self-consistent grip) */
+#include "vehicle_config.h"    /* apex_speed() / lateral_grip_accel() (downforce) */
 #include <math.h>
 
 /*
@@ -16,13 +16,13 @@
  */
 
 /* Cone positions, loaded from the track struct. */
-static float left_x[MAX_CONES],  left_y[MAX_CONES];
+static float left_x[MAX_CONES], left_y[MAX_CONES];
 static float right_x[MAX_CONES], right_y[MAX_CONES];
 
 
 /* Gate extraction: pair each left cone with its nearest right cone. */
 #define PP_MAX_GATES     400
-#define MAX_GATE_WIDTH_M 10.0f   /* reject pairs wider than this (metres) */
+#define MAX_GATE_WIDTH_M 10.0f /* reject pairs wider than this (metres) */
 
 typedef struct {
     TrackPoint left;
@@ -30,23 +30,27 @@ typedef struct {
 } Gate;
 
 static Gate pp_gates[PP_MAX_GATES];
-static int  pp_n_gates;
+static int pp_n_gates;
 
 static void extract_gates(int n_left, int n_right)
 {
-    int   i, j;
-    int   nearest_right[MAX_CONES];
+    int i, j;
+    int nearest_right[MAX_CONES];
     float dx, dy, d, best_d;
     float max_w2 = MAX_GATE_WIDTH_M * MAX_GATE_WIDTH_M;
 
     /* For each left cone, find the nearest right cone. */
     for (i = 0; i < n_left; i++) {
-        nearest_right[i] = 0; best_d = 1e18f;
+        nearest_right[i] = 0;
+        best_d           = 1e18f;
         for (j = 0; j < n_right; j++) {
             dx = right_x[j] - left_x[i];
             dy = right_y[j] - left_y[i];
-            d  = dx*dx + dy*dy;
-            if (d < best_d) { best_d = d; nearest_right[i] = j; }
+            d  = dx * dx + dy * dy;
+            if (d < best_d) {
+                best_d           = d;
+                nearest_right[i] = j;
+            }
         }
     }
 
@@ -55,9 +59,9 @@ static void extract_gates(int n_left, int n_right)
     pp_n_gates = 0;
     for (i = 0; i < n_left && pp_n_gates < PP_MAX_GATES; i++) {
         int ri = nearest_right[i];
-        dx = right_x[ri] - left_x[i];
-        dy = right_y[ri] - left_y[i];
-        if (dx*dx + dy*dy > max_w2) continue;
+        dx     = right_x[ri] - left_x[i];
+        dy     = right_y[ri] - left_y[i];
+        if (dx * dx + dy * dy > max_w2) continue;
 
         pp_gates[pp_n_gates].left.x  = left_x[i];
         pp_gates[pp_n_gates].left.y  = left_y[i];
@@ -72,7 +76,7 @@ static void extract_gates(int n_left, int n_right)
  * Resampling to even spacing avoids the uneven, overlapping gates you get from
  * one point per cone. */
 
-#define RESAMPLE_SPACING_M  2.5f   /* target waypoint spacing, metres        */
+#define RESAMPLE_SPACING_M 2.5f /* target waypoint spacing, metres        */
 
 /* RACING_MARGIN keeps the line this fraction of the half-width off each
  * boundary. Keep it modest so tight apexes are not over-constrained, but it must
@@ -81,34 +85,34 @@ static void extract_gates(int n_left, int n_right)
  * clear cones by more than the off-track threshold plus its own cross-track
  * error. */
 #ifndef RACING_MARGIN
-#define RACING_MARGIN  0.3400f
+#define RACING_MARGIN 0.3400f
 #endif
-#define OPT_PASSES     400
+#define OPT_PASSES 400
 
 /* Centreline (one entry per gate, in order) */
 static float cl_x[PP_MAX_GATES];
 static float cl_y[PP_MAX_GATES];
-static float cl_h[PP_MAX_GATES];   /* corridor half-width at this point       */
+static float cl_h[PP_MAX_GATES]; /* corridor half-width at this point       */
 
 /* Resampled, uniformly spaced racing-line buffers */
-static float rs_x[MAX_WAYPOINTS];  /* centreline (reference)                  */
+static float rs_x[MAX_WAYPOINTS]; /* centreline (reference)                  */
 static float rs_y[MAX_WAYPOINTS];
 static float rs_h[MAX_WAYPOINTS];  /* half-width                              */
 static float rs_nx[MAX_WAYPOINTS]; /* unit track normal                       */
 static float rs_ny[MAX_WAYPOINTS];
-static float rs_off[MAX_WAYPOINTS];/* lateral offset along the normal         */
-static int   rs_n;
+static float rs_off[MAX_WAYPOINTS]; /* lateral offset along the normal         */
+static int rs_n;
 
 /* Build the centreline (gate midpoints + half-widths) from the gates. */
 static void build_centreline(void)
 {
     int i;
     for (i = 0; i < pp_n_gates; i++) {
-        cl_x[i] = 0.5f * (pp_gates[i].left.x + pp_gates[i].right.x);
-        cl_y[i] = 0.5f * (pp_gates[i].left.y + pp_gates[i].right.y);
+        cl_x[i]  = 0.5f * (pp_gates[i].left.x + pp_gates[i].right.x);
+        cl_y[i]  = 0.5f * (pp_gates[i].left.y + pp_gates[i].right.y);
         float dx = pp_gates[i].right.x - pp_gates[i].left.x;
         float dy = pp_gates[i].right.y - pp_gates[i].left.y;
-        cl_h[i] = 0.5f * sqrtf(dx*dx + dy*dy);
+        cl_h[i]  = 0.5f * sqrtf(dx * dx + dy * dy);
     }
 }
 
@@ -116,35 +120,38 @@ static void build_centreline(void)
  * and half-width. */
 static void resample_centreline(void)
 {
-    int   g = pp_n_gates;
-    int   i;
+    int g = pp_n_gates;
+    int i;
     float total = 0.0f;
 
     for (i = 0; i < g; i++) {
         int j = (i + 1) % g;
-        total += sqrtf((cl_x[j]-cl_x[i])*(cl_x[j]-cl_x[i]) +
-                       (cl_y[j]-cl_y[i])*(cl_y[j]-cl_y[i]));
+        total += sqrtf(
+            (cl_x[j] - cl_x[i]) * (cl_x[j] - cl_x[i]) + (cl_y[j] - cl_y[i]) * (cl_y[j] - cl_y[i]));
     }
 
     int m = (int)(total / RESAMPLE_SPACING_M + 0.5f);
-    if (m < 8)               m = 8;
-    if (m > MAX_WAYPOINTS)   m = MAX_WAYPOINTS;
+    if (m < 8) m = 8;
+    if (m > MAX_WAYPOINTS) m = MAX_WAYPOINTS;
     float step = total / (float)m;
 
     /* O(m*g): re-walks from segment 0 per output point. Fine at track sizes. */
-    int   seg     = 0;
+    int seg       = 0;
     float seg_acc = 0.0f;
     float seg_len = 0.0f;
-    (void)seg; (void)seg_acc; (void)seg_len; /* initialised inside the loop */
+    (void)seg;
+    (void)seg_acc;
+    (void)seg_len; /* initialised inside the loop */
 
     for (i = 0; i < m; i++) {
         float target = i * step;
         float walked = 0.0f;
-        seg = 0; seg_acc = 0.0f;
+        seg          = 0;
+        seg_acc      = 0.0f;
         while (seg < g) {
-            int j = (seg + 1) % g;
-            seg_len = sqrtf((cl_x[j]-cl_x[seg])*(cl_x[j]-cl_x[seg]) +
-                            (cl_y[j]-cl_y[seg])*(cl_y[j]-cl_y[seg]));
+            int j   = (seg + 1) % g;
+            seg_len = sqrtf((cl_x[j] - cl_x[seg]) * (cl_x[j] - cl_x[seg])
+                + (cl_y[j] - cl_y[seg]) * (cl_y[j] - cl_y[seg]));
             if (walked + seg_len >= target || seg == g - 1) {
                 seg_acc = target - walked;
                 break;
@@ -152,7 +159,7 @@ static void resample_centreline(void)
             walked += seg_len;
             seg++;
         }
-        int   j = (seg + 1) % g;
+        int j   = (seg + 1) % g;
         float t = (seg_len > 1e-6f) ? (seg_acc / seg_len) : 0.0f;
         if (t < 0.0f) t = 0.0f;
         if (t > 1.0f) t = 1.0f;
@@ -168,15 +175,19 @@ static void compute_normals(void)
 {
     int i, n = rs_n;
     for (i = 0; i < n; i++) {
-        int p = (i - 1 + n) % n;
-        int q = (i + 1) % n;
-        float tx = rs_x[q] - rs_x[p];
-        float ty = rs_y[q] - rs_y[p];
-        float len = sqrtf(tx*tx + ty*ty);
-        if (len < 1e-6f) { rs_nx[i] = 0.0f; rs_ny[i] = 0.0f; continue; }
+        int p     = (i - 1 + n) % n;
+        int q     = (i + 1) % n;
+        float tx  = rs_x[q] - rs_x[p];
+        float ty  = rs_y[q] - rs_y[p];
+        float len = sqrtf(tx * tx + ty * ty);
+        if (len < 1e-6f) {
+            rs_nx[i] = 0.0f;
+            rs_ny[i] = 0.0f;
+            continue;
+        }
         /* left-hand normal */
         rs_nx[i] = -ty / len;
-        rs_ny[i] =  tx / len;
+        rs_ny[i] = tx / len;
     }
 }
 
@@ -225,17 +236,17 @@ static void compute_normals(void)
  * if you deliberately want to shape a more/less aggressive line than the car
  * drives; always confirm 0 off-track with `make eval`. */
 #ifndef PP_GRIP_ACCEL
-#define PP_GRIP_ACCEL     12.6186f
+#define PP_GRIP_ACCEL 12.6186f
 #endif
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
-#define PP_ACCEL_LON      6.0f
+#define PP_ACCEL_LON 6.0f
 #endif
 #ifndef PP_BRAKE_LON
-#define PP_BRAKE_LON      9.0f
+#define PP_BRAKE_LON 9.0f
 #endif
 /* Top speed cap for the profile, m/s (matches the car's TARGET_SPEED_MS). */
-#define PP_V_MAX          30.0f
+#define PP_V_MAX 30.0f
 
 /* Feasibility floor: the car's steering geometry gives a kinematic minimum
  * turning radius of ~3.8 m (MAX_STEER_RAD), but the radius it can actually HOLD
@@ -255,44 +266,50 @@ static void compute_normals(void)
  * lap_time() charges a steep penalty for any segment tighter than this floor, so
  * the optimiser never draws an un-holdable apex. */
 #ifndef PP_MIN_RADIUS_M
-#define PP_MIN_RADIUS_M   4.5000f
+#define PP_MIN_RADIUS_M 4.5000f
 #endif
 /* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
  * floor. Large enough to dominate any real time gain a too-tight apex could
  * offer, so an infeasible radius is always rejected. */
-#define PP_CURV_PENALTY   50.0f
+#define PP_CURV_PENALTY 50.0f
 
 /* Coordinate-descent schedule. */
-#define CD_PASSES         60      /* anneal steps                              */
-#define CD_DELTA0         0.60f   /* initial offset perturbation, m            */
-#define CD_DELTA_MIN      0.02f   /* stop annealing here, m                    */
+#define CD_PASSES    60    /* anneal steps                              */
+#define CD_DELTA0    0.60f /* initial offset perturbation, m            */
+#define CD_DELTA_MIN 0.02f /* stop annealing here, m                    */
 
-static float rs_px(int i) { return rs_x[i] + rs_off[i] * rs_nx[i]; }
-static float rs_py(int i) { return rs_y[i] + rs_off[i] * rs_ny[i]; }
+static float rs_px(int i)
+{
+    return rs_x[i] + rs_off[i] * rs_nx[i];
+}
+static float rs_py(int i)
+{
+    return rs_y[i] + rs_off[i] * rs_ny[i];
+}
 
 /* Discrete curvature at point i of the current (offset) line, 1/m. */
 static float line_curvature(int i, int n)
 {
-    int im1 = (i - 1 + n) % n;
-    int ip1 = (i + 1)     % n;
+    int im1  = (i - 1 + n) % n;
+    int ip1  = (i + 1) % n;
     float ax = rs_px(im1), ay = rs_py(im1);
-    float bx = rs_px(i),   by = rs_py(i);
+    float bx = rs_px(i), by = rs_py(i);
     float cx = rs_px(ip1), cy = rs_py(ip1);
-    float abx = bx-ax, aby = by-ay;
-    float bcx = cx-bx, bcy = cy-by;
-    float cax = ax-cx, cay = ay-cy;
-    float ab = sqrtf(abx*abx + aby*aby);
-    float bc = sqrtf(bcx*bcx + bcy*bcy);
-    float ca = sqrtf(cax*cax + cay*cay);
-    float crs = fabsf(abx*bcy - aby*bcx);
+    float abx = bx - ax, aby = by - ay;
+    float bcx = cx - bx, bcy = cy - by;
+    float cax = ax - cx, cay = ay - cy;
+    float ab  = sqrtf(abx * abx + aby * aby);
+    float bc  = sqrtf(bcx * bcx + bcy * bcy);
+    float ca  = sqrtf(cax * cax + cay * cay);
+    float crs = fabsf(abx * bcy - aby * bcx);
     if (ab < 0.01f || bc < 0.01f || ca < 0.01f || crs < 1e-6f) return 0.0f;
     return 2.0f * crs / (ab * bc * ca);
 }
 
 /* Scratch buffers for the lap-time evaluation (module-static to avoid large
  * stack frames; the solve is single-threaded and runs once). */
-static float lt_ds[MAX_WAYPOINTS];  /* segment length i -> i+1, m   */
-static float lt_v [MAX_WAYPOINTS];  /* speed profile at point i, m/s */
+static float lt_ds[MAX_WAYPOINTS]; /* segment length i -> i+1, m   */
+static float lt_v[MAX_WAYPOINTS];  /* speed profile at point i, m/s */
 
 /*
  * Lap time of the current offset line under a quasi-steady-state speed model.
@@ -310,10 +327,10 @@ static float lap_time(int n)
 
     /* segment lengths + apex (lateral-grip) speed cap */
     for (i = 0; i < n; i++) {
-        int j = (i + 1) % n;
+        int j    = (i + 1) % n;
         float dx = rs_px(j) - rs_px(i);
         float dy = rs_py(j) - rs_py(i);
-        lt_ds[i] = sqrtf(dx*dx + dy*dy);
+        lt_ds[i] = sqrtf(dx * dx + dy * dy);
 
         /* Apex speed under SPEED-DEPENDENT grip: downforce adds lateral grip with
          * v^2, so the fast corners hold more than the flat PP_GRIP_ACCEL alone.
@@ -328,13 +345,13 @@ static float lap_time(int n)
      * around the closed loop so the limits propagate fully past the wrap. */
     for (lap = 0; lap < 2; lap++) {
         for (i = 0; i < n; i++) {
-            int j = (i + 1) % n;
-            float reach = sqrtf(lt_v[i]*lt_v[i] + 2.0f*PP_ACCEL_LON*lt_ds[i]);
+            int j       = (i + 1) % n;
+            float reach = sqrtf(lt_v[i] * lt_v[i] + 2.0f * PP_ACCEL_LON * lt_ds[i]);
             if (lt_v[j] > reach) lt_v[j] = reach;
         }
         for (i = n - 1; i >= 0; i--) {
-            int j = (i + 1) % n;
-            float reach = sqrtf(lt_v[j]*lt_v[j] + 2.0f*PP_BRAKE_LON*lt_ds[i]);
+            int j       = (i + 1) % n;
+            float reach = sqrtf(lt_v[j] * lt_v[j] + 2.0f * PP_BRAKE_LON * lt_ds[i]);
             if (lt_v[i] > reach) lt_v[i] = reach;
         }
     }
@@ -342,16 +359,15 @@ static float lap_time(int n)
     /* T = Sum ds_i / v_avg over each segment, plus a feasibility penalty for any
      * point whose radius is below PP_MIN_RADIUS_M (un-steerable for this car). */
     const float k_floor = 1.0f / PP_MIN_RADIUS_M;
-    float t = 0.0f;
+    float t             = 0.0f;
     for (i = 0; i < n; i++) {
-        int j = (i + 1) % n;
+        int j      = (i + 1) % n;
         float vavg = 0.5f * (lt_v[i] + lt_v[j]);
-        if (vavg < 0.5f) vavg = 0.5f;     /* guard near standstill */
+        if (vavg < 0.5f) vavg = 0.5f; /* guard near standstill */
         t += lt_ds[i] / vavg;
 
         float k = line_curvature(i, n);
-        if (k > k_floor)
-            t += PP_CURV_PENALTY * (k - k_floor);
+        if (k > k_floor) t += PP_CURV_PENALTY * (k - k_floor);
     }
     return t;
 }
@@ -363,7 +379,8 @@ static float lap_time(int n)
 static void seed_min_curvature(int n)
 {
     int pass, i;
-    for (i = 0; i < n; i++) rs_off[i] = 0.0f;
+    for (i = 0; i < n; i++)
+        rs_off[i] = 0.0f;
 
     for (pass = 0; pass < OPT_PASSES; pass++) {
         int start = (pass % 2 == 0) ? 0 : n - 1;
@@ -371,12 +388,14 @@ static void seed_min_curvature(int n)
         int step  = (pass % 2 == 0) ? 1 : -1;
         for (i = start; i != end; i += step) {
             int im2 = (i - 2 + n) % n, im1 = (i - 1 + n) % n;
-            int ip1 = (i + 1) % n,     ip2 = (i + 2) % n;
-            float Sx = rs_px(im2) - 4.0f*rs_px(im1) + 6.0f*rs_x[i] - 4.0f*rs_px(ip1) + rs_px(ip2);
-            float Sy = rs_py(im2) - 4.0f*rs_py(im1) + 6.0f*rs_y[i] - 4.0f*rs_py(ip1) + rs_py(ip2);
-            float o = -(rs_nx[i]*Sx + rs_ny[i]*Sy) / 6.0f;
-            float lim = (1.0f - 2.0f*RACING_MARGIN) * rs_h[i];
-            if (o >  lim) o =  lim;
+            int ip1 = (i + 1) % n, ip2 = (i + 2) % n;
+            float Sx
+                = rs_px(im2) - 4.0f * rs_px(im1) + 6.0f * rs_x[i] - 4.0f * rs_px(ip1) + rs_px(ip2);
+            float Sy
+                = rs_py(im2) - 4.0f * rs_py(im1) + 6.0f * rs_y[i] - 4.0f * rs_py(ip1) + rs_py(ip2);
+            float o   = -(rs_nx[i] * Sx + rs_ny[i] * Sy) / 6.0f;
+            float lim = (1.0f - 2.0f * RACING_MARGIN) * rs_h[i];
+            if (o > lim) o = lim;
             if (o < -lim) o = -lim;
             rs_off[i] = o;
         }
@@ -387,7 +406,8 @@ static void optimize_racing_line(void)
 {
     int pass, i, n = rs_n;
 
-    for (i = 0; i < n; i++) rs_off[i] = 0.0f;
+    for (i = 0; i < n; i++)
+        rs_off[i] = 0.0f;
     if (n < 5) return;
 
     /* Warm start from the smooth minimum-curvature line. */
@@ -399,31 +419,33 @@ static void optimize_racing_line(void)
      * apexes coarsely first, then fine-tunes. lap_time() reads the live offsets,
      * so each accepted move is felt by its neighbours on the next visit. */
     float delta = CD_DELTA0;
-    float best = lap_time(n);
+    float best  = lap_time(n);
 
     for (pass = 0; pass < CD_PASSES && delta >= CD_DELTA_MIN; pass++) {
         int improved = 0;
         for (i = 0; i < n; i++) {
-            float lim = (1.0f - 2.0f*RACING_MARGIN) * rs_h[i];
+            float lim = (1.0f - 2.0f * RACING_MARGIN) * rs_h[i];
             float o0  = rs_off[i];
 
             /* try + then - */
             for (int s = 0; s < 2; s++) {
                 float cand = o0 + (s == 0 ? delta : -delta);
-                if (cand >  lim) cand =  lim;
+                if (cand > lim) cand = lim;
                 if (cand < -lim) cand = -lim;
                 if (cand == rs_off[i]) continue;
 
                 rs_off[i] = cand;
-                float t = lap_time(n);
+                float t   = lap_time(n);
                 if (t < best - 1e-6f) {
-                    best = t; o0 = cand; improved = 1;
+                    best     = t;
+                    o0       = cand;
+                    improved = 1;
                 } else {
-                    rs_off[i] = o0;   /* revert */
+                    rs_off[i] = o0; /* revert */
                 }
             }
         }
-        if (!improved) delta *= 0.5f;   /* no gain at this scale -> refine */
+        if (!improved) delta *= 0.5f; /* no gain at this scale -> refine */
     }
 }
 
@@ -435,8 +457,14 @@ void path_plan(Track *track)
     int n_left  = track->left_count;
     int n_right = track->right_count;
 
-    for (i = 0; i < n_left;  i++) { left_x[i]  = track->left_cones[i].x;  left_y[i]  = track->left_cones[i].y; }
-    for (i = 0; i < n_right; i++) { right_x[i] = track->right_cones[i].x; right_y[i] = track->right_cones[i].y; }
+    for (i = 0; i < n_left; i++) {
+        left_x[i] = track->left_cones[i].x;
+        left_y[i] = track->left_cones[i].y;
+    }
+    for (i = 0; i < n_right; i++) {
+        right_x[i] = track->right_cones[i].x;
+        right_y[i] = track->right_cones[i].y;
+    }
 
     extract_gates(n_left, n_right);
     build_centreline();

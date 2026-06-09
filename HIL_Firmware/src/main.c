@@ -4,12 +4,12 @@
 #include <time.h>
 
 #ifdef _WIN32
-    #include <windows.h>
-    #include <conio.h>
+#include <windows.h>
+#include <conio.h>
 #else
-    #include <unistd.h>
-    #include <termios.h>
-    #include <fcntl.h>
+#include <unistd.h>
+#include <termios.h>
+#include <fcntl.h>
 #endif
 
 #include "../include/vehicle_model.h"
@@ -43,7 +43,9 @@
  *     END_TRACK
  *
  *   State lines (one per display tick):
- *     STATE <x> <y> <heading> <speed_kmh> <yaw_deg_s> <fl> <fr> <rl> <rr> <tv> <kp> <lap> <elapsed_s> <steering_rad> <slip_angle_rad> <desired_yaw_rad_s> <ax_ms2> <ay_ms2> <vy_ms> <target_speed_kmh>
+ *     STATE <x> <y> <heading> <speed_kmh> <yaw_deg_s> <fl> <fr> <rl> <rr> <tv> <kp> <lap>
+ * <elapsed_s> <steering_rad> <slip_angle_rad> <desired_yaw_rad_s> <ax_ms2> <ay_ms2> <vy_ms>
+ * <target_speed_kmh>
  *
  *   Commands come in on stdin (one character at a time):
  *     t  -- toggle torque vectoring
@@ -52,29 +54,31 @@
  *     q  -- quit
  */
 
-#define SIM_HZ           100
-#define DISPLAY_HZ        20
-#define DT               (1.0f / SIM_HZ)
-#define TICKS_PER_FRAME  (SIM_HZ / DISPLAY_HZ)
+#define SIM_HZ          100
+#define DISPLAY_HZ      20
+#define DT              (1.0f / SIM_HZ)
+#define TICKS_PER_FRAME (SIM_HZ / DISPLAY_HZ)
 
 
 /* ---- Platform-specific non-blocking stdin read ---- */
 
 #ifdef _WIN32
 
-static void stdin_setup(void)   { /* nothing needed */ }
-static void stdin_restore(void) { /* nothing needed */ }
+static void stdin_setup(void)
+{ /* nothing needed */
+}
+static void stdin_restore(void)
+{ /* nothing needed */
+}
 
 static int poll_stdin(void)
 {
-    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD  avail = 0;
-    if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail == 0)
-        return -1;
+    HANDLE h    = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD avail = 0;
+    if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail == 0) return -1;
     DWORD read_count = 0;
     unsigned char c;
-    if (ReadFile(h, &c, 1, &read_count, NULL) && read_count == 1)
-        return (int)c;
+    if (ReadFile(h, &c, 1, &read_count, NULL) && read_count == 1) return (int)c;
     return -1;
 }
 
@@ -127,7 +131,7 @@ static void sleep_ms(int ms)
 static double get_time_s(void)
 {
 #ifdef _WIN32
-    static LARGE_INTEGER freq = {0};
+    static LARGE_INTEGER freq = { 0 };
     if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
     LARGE_INTEGER count;
     QueryPerformanceCounter(&count);
@@ -144,10 +148,10 @@ static double get_time_s(void)
 
 int main(void)
 {
-    Track        track;
+    Track track;
     VehicleState state;
-    WheelTorques torques = {0};
-    SensorData   sensors = {0};
+    WheelTorques torques = { 0 };
+    SensorData sensors   = { 0 };
 
     track_init(&track);
 
@@ -157,8 +161,8 @@ int main(void)
     }
 
     /* Derive initial heading from the direction of the first track segment */
-    float init_dx = track.points[1].x - track.points[0].x;
-    float init_dy = track.points[1].y - track.points[0].y;
+    float init_dx      = track.points[1].x - track.points[0].x;
+    float init_dy      = track.points[1].y - track.points[0].y;
     float init_heading = atan2f(init_dy, init_dx);
     vehicle_model_init(&state, track.points[0].x, track.points[0].y, init_heading);
 
@@ -191,15 +195,14 @@ int main(void)
 
     stdin_setup();
 
-    int    tv_enabled = 1;
-    float  kp_yaw     = KP_YAW_DEFAULT;
-    int    tick       = 0;
-    int    running    = 1;
-    double sim_start  = get_time_s();
-    double next_tick  = sim_start;
+    int tv_enabled   = 1;
+    float kp_yaw     = KP_YAW_DEFAULT;
+    int tick         = 0;
+    int running      = 1;
+    double sim_start = get_time_s();
+    double next_tick = sim_start;
 
-    while (running)
-    {
+    while (running) {
         double now = get_time_s();
 
         if (now < next_tick) {
@@ -210,7 +213,7 @@ int main(void)
         tick++;
 
         /* 1. Motion control */
-        float target_speed = 0.0f;
+        float target_speed  = 0.0f;
         float driver_torque = motion_control_update(&state, &track, &target_speed);
 
         /* 2. Pack sensor data */
@@ -222,8 +225,7 @@ int main(void)
         /* Real per-corner wheel speeds from the vehicle model.  The model
          * stores motor-shaft RPM; convert to wheel angular speed (rad/s) for
          * the sensor bus: wheel_rad/s = motor_RPM / GEAR_RATIO * 2π/60. */
-        const float RPM_TO_WHEEL_RADS = (2.0f * 3.14159265358979f)
-                                        / (GEAR_RATIO * 60.0f);
+        const float RPM_TO_WHEEL_RADS = (2.0f * 3.14159265358979f) / (GEAR_RATIO * 60.0f);
         sensors.wheel_speed[WHEEL_FL] = state.wheelspeed[WHEEL_FL] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_FR] = state.wheelspeed[WHEEL_FR] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_RL] = state.wheelspeed[WHEEL_RL] * RPM_TO_WHEEL_RADS;
@@ -248,28 +250,22 @@ int main(void)
 
         /* 6. Print state line at display rate */
         if (tick % TICKS_PER_FRAME == 0) {
-            float elapsed = (float)(get_time_s() - sim_start);
+            float elapsed          = (float)(get_time_s() - sim_start);
             float desired_yaw_rate = 0.0f;
             if (state.velocity > 0.5f)
                 desired_yaw_rate = state.velocity * tanf(state.steering) / WHEELBASE_M;
-            printf("STATE %.3f %.3f %.4f %.2f %.2f %.1f %.1f %.1f %.1f %d %.1f %d %.1f %.4f %.4f %.4f %.3f %.3f %.3f %.2f\n",
-                   state.x,
-                   state.y,
-                   state.heading,
-                   state.velocity * 3.6f,       /* m/s -> km/h */
-                   state.yaw_rate * 57.2958f,   /* rad/s -> deg/s */
-                   torques.fl, torques.fr, torques.rl, torques.rr,
-                   tv_enabled,
-                   kp_yaw,
-                   track.lap_count,
-                   elapsed,
-                   state.steering,              /* radians */
-                   state.slip_angle,            /* radians */
-                   desired_yaw_rate,            /* rad/s */
-                   state.ax,                    /* m/s^2 (for G-G display) */
-                   state.ay,                    /* m/s^2 (for G-G display) */
-                   state.vy,                    /* m/s  (lateral velocity) */
-                   target_speed * 3.6f);        /* planner target speed, km/h */
+            printf("STATE %.3f %.3f %.4f %.2f %.2f %.1f %.1f %.1f %.1f %d %.1f %d %.1f %.4f %.4f "
+                   "%.4f %.3f %.3f %.3f %.2f\n",
+                state.x, state.y, state.heading, state.velocity * 3.6f, /* m/s -> km/h */
+                state.yaw_rate * 57.2958f,                              /* rad/s -> deg/s */
+                torques.fl, torques.fr, torques.rl, torques.rr, tv_enabled, kp_yaw, track.lap_count,
+                elapsed, state.steering, /* radians */
+                state.slip_angle,        /* radians */
+                desired_yaw_rate,        /* rad/s */
+                state.ax,                /* m/s^2 (for G-G display) */
+                state.ay,                /* m/s^2 (for G-G display) */
+                state.vy,                /* m/s  (lateral velocity) */
+                target_speed * 3.6f);    /* planner target speed, km/h */
             fflush(stdout);
         }
 
@@ -277,22 +273,25 @@ int main(void)
         int cmd = poll_stdin();
         if (cmd != -1) {
             switch (cmd) {
-                case 't': case 'T':
-                    tv_enabled = !tv_enabled;
-                    break;
-                case '[':
-                    kp_yaw -= 5.0f;
-                    if (kp_yaw < 0.0f) kp_yaw = 0.0f;
-                    break;
-                case ']':
-                    kp_yaw += 5.0f;
-                    if (kp_yaw > 500.0f) kp_yaw = 500.0f;
-                    break;
-                case 'q': case 'Q': case 27:
-                    running = 0;
-                    break;
-                default:
-                    break;
+            case 't':
+            case 'T':
+                tv_enabled = !tv_enabled;
+                break;
+            case '[':
+                kp_yaw -= 5.0f;
+                if (kp_yaw < 0.0f) kp_yaw = 0.0f;
+                break;
+            case ']':
+                kp_yaw += 5.0f;
+                if (kp_yaw > 500.0f) kp_yaw = 500.0f;
+                break;
+            case 'q':
+            case 'Q':
+            case 27:
+                running = 0;
+                break;
+            default:
+                break;
             }
         }
     }

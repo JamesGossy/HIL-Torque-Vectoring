@@ -18,11 +18,11 @@
  * the torque vectoring algorithm. The ECU never touches the full VehicleState
  * -- it only gets what a real sensor suite would provide. */
 typedef struct {
-    float yaw_rate;        /* rad/s  -- from the IMU gyroscope */
-    float velocity;        /* m/s    -- average of all four wheel speeds */
-    float steering_angle;  /* rad    -- from the steering angle sensor */
-    float wheel_speed[4];  /* rad/s  -- FL, FR, RL, RR from wheel encoders */
-    float driver_torque;   /* Nm     -- total torque requested by the driver (throttle pedal) */
+    float yaw_rate;       /* rad/s  -- from the IMU gyroscope */
+    float velocity;       /* m/s    -- average of all four wheel speeds */
+    float steering_angle; /* rad    -- from the steering angle sensor */
+    float wheel_speed[4]; /* rad/s  -- FL, FR, RL, RR from wheel encoders */
+    float driver_torque;  /* Nm     -- total torque requested by the driver (throttle pedal) */
 } SensorData;
 
 
@@ -30,10 +30,10 @@ typedef struct {
  * The TV algorithm fills this in and hands it back to the HIL,
  * which applies it to the vehicle model on the next tick. */
 typedef struct {
-    float fl;  /* Front-left motor,  Nm */
-    float fr;  /* Front-right motor, Nm */
-    float rl;  /* Rear-left motor,   Nm */
-    float rr;  /* Rear-right motor,  Nm */
+    float fl; /* Front-left motor,  Nm */
+    float fr; /* Front-right motor, Nm */
+    float rl; /* Rear-left motor,   Nm */
+    float rr; /* Rear-right motor,  Nm */
 } WheelTorques;
 
 

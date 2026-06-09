@@ -27,10 +27,8 @@
  *   kp_yaw        proportional gain (changed at runtime by the user)
  *   out           filled with the four wheel torque demands
  */
-void torque_vectoring_update(const SensorData *sensors,
-                             float             driver_torque,
-                             float             kp_yaw,
-                             WheelTorques     *out);
+void torque_vectoring_update(
+    const SensorData *sensors, float driver_torque, float kp_yaw, WheelTorques *out);
 
 /*
  * Reset the controller's internal PID state. Normal operation never needs this

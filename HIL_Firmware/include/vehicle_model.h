@@ -18,31 +18,31 @@
 
 
 typedef struct {
-    float x;               /* World X position, metres (east +)            */
-    float y;               /* World Y position, metres (north +)           */
-    float heading;         /* Yaw angle, rad.  0 = east, CCW +             */
-    float velocity;        /* Longitudinal speed vx, m/s                   */
-    float vy;              /* Lateral velocity at CG, m/s (left +)         */
-    float yaw_rate;        /* Yaw rate, rad/s (CCW +, i.e. turning left +) */
-    float slip_angle;      /* Body slip angle β = atan2(vy, vx), rad       */
+    float x;          /* World X position, metres (east +)            */
+    float y;          /* World Y position, metres (north +)           */
+    float heading;    /* Yaw angle, rad.  0 = east, CCW +             */
+    float velocity;   /* Longitudinal speed vx, m/s                   */
+    float vy;         /* Lateral velocity at CG, m/s (left +)         */
+    float yaw_rate;   /* Yaw rate, rad/s (CCW +, i.e. turning left +) */
+    float slip_angle; /* Body slip angle β = atan2(vy, vx), rad       */
 
     /* Steering: set steering_input to the common front wheel angle (rad).
      * The model computes FL/FR individually using Ackermann ratios. */
-    float steering;        /* Signed front-axle reference angle, rad       */
-    float steer_fl;        /* Computed FL wheel angle (Ackermann), rad     */
-    float steer_fr;        /* Computed FR wheel angle (Ackermann), rad     */
+    float steering; /* Signed front-axle reference angle, rad       */
+    float steer_fl; /* Computed FL wheel angle (Ackermann), rad     */
+    float steer_fr; /* Computed FR wheel angle (Ackermann), rad     */
 
-    float ax;              /* Longitudinal acceleration, m/s² (G-G display)*/
-    float ay;              /* Lateral acceleration, m/s² (G-G display)     */
+    float ax; /* Longitudinal acceleration, m/s² (G-G display)*/
+    float ay; /* Lateral acceleration, m/s² (G-G display)     */
 
     /* Roll/pitch-lagged accelerations driving load transfer (first-order
      * filtered ax/ay).  Kept as state so the transfer terms do not form an
      * algebraic feedback loop with the same-tick acceleration. */
-    float ax_filt;         /* Lagged longitudinal accel for load transfer  */
-    float ay_filt;         /* Lagged lateral accel for load transfer       */
+    float ax_filt; /* Lagged longitudinal accel for load transfer  */
+    float ay_filt; /* Lagged lateral accel for load transfer       */
 
     /* Per-wheel outputs (RPM in motor shaft frame) */
-    float wheelspeed[4];   /* FL, FR, RL, RR - motor RPM (positive = fwd) */
+    float wheelspeed[4]; /* FL, FR, RL, RR - motor RPM (positive = fwd) */
 
 } VehicleState;
 

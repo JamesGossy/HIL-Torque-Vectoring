@@ -31,7 +31,7 @@
 #define TV_WHEEL_RADIUS_M WHEEL_RADIUS_M
 
 /* Front share of the differential, derived from the rear share. */
-#define TV_FRONT_SHARE     (1.0f - TV_REAR_SHARE)
+#define TV_FRONT_SHARE (1.0f - TV_REAR_SHARE)
 
 
 /* Clamp one axle's left/right torques to the motor limits while preserving the
@@ -39,22 +39,33 @@
  * exceeds the peak, the excess is shifted onto the other side before clamping,
  * so a saturated outer wheel does not silently collapse the differential.
  * Returns 1 if either side hit a hard limit. */
-static int clamp_axle_preserving(float left, float right,
-                                 float *left_out, float *right_out)
+static int clamp_axle_preserving(float left, float right, float *left_out, float *right_out)
 {
     int saturated = 0;
 
     if (left > MAX_MOTOR_TORQUE_NM) {
         right -= (left - MAX_MOTOR_TORQUE_NM);
-        left   = MAX_MOTOR_TORQUE_NM;
+        left = MAX_MOTOR_TORQUE_NM;
     } else if (right > MAX_MOTOR_TORQUE_NM) {
         left -= (right - MAX_MOTOR_TORQUE_NM);
         right = MAX_MOTOR_TORQUE_NM;
     }
-    if (left  < MIN_MOTOR_TORQUE_NM) { left  = MIN_MOTOR_TORQUE_NM; saturated = 1; }
-    if (left  > MAX_MOTOR_TORQUE_NM) { left  = MAX_MOTOR_TORQUE_NM; saturated = 1; }
-    if (right < MIN_MOTOR_TORQUE_NM) { right = MIN_MOTOR_TORQUE_NM; saturated = 1; }
-    if (right > MAX_MOTOR_TORQUE_NM) { right = MAX_MOTOR_TORQUE_NM; saturated = 1; }
+    if (left < MIN_MOTOR_TORQUE_NM) {
+        left      = MIN_MOTOR_TORQUE_NM;
+        saturated = 1;
+    }
+    if (left > MAX_MOTOR_TORQUE_NM) {
+        left      = MAX_MOTOR_TORQUE_NM;
+        saturated = 1;
+    }
+    if (right < MIN_MOTOR_TORQUE_NM) {
+        right     = MIN_MOTOR_TORQUE_NM;
+        saturated = 1;
+    }
+    if (right > MAX_MOTOR_TORQUE_NM) {
+        right     = MAX_MOTOR_TORQUE_NM;
+        saturated = 1;
+    }
 
     *left_out  = left;
     *right_out = right;
@@ -63,9 +74,9 @@ static int clamp_axle_preserving(float left, float right,
 
 
 /* Controller memory. File-scope so torque_vectoring_reset() can clear it. */
-static float g_integ      = 0.0f;   /* integral of yaw error */
-static float g_prev_error = 0.0f;   /* previous tick's yaw error */
-static int   g_primed     = 0;      /* false until the first call seeds */
+static float g_integ      = 0.0f; /* integral of yaw error */
+static float g_prev_error = 0.0f; /* previous tick's yaw error */
+static int g_primed       = 0;    /* false until the first call seeds */
 
 void torque_vectoring_reset(void)
 {
@@ -74,12 +85,9 @@ void torque_vectoring_reset(void)
     g_primed     = 0;
 }
 
-void torque_vectoring_update(const SensorData *sensors,
-                             float             driver_torque,
-                             float             kp_yaw,
-                             WheelTorques     *out)
+void torque_vectoring_update(
+    const SensorData *sensors, float driver_torque, float kp_yaw, WheelTorques *out)
 {
-
     /* Step 1: desired yaw rate. The v^2 understeer term bends the reference down
      * to the yaw rate the car can actually reach:
      *   r = v * tan(delta) / (L + K_us * v^2). */
@@ -94,9 +102,8 @@ void torque_vectoring_update(const SensorData *sensors,
      * car (it delays the moment, so the car understeers into corners). */
     float desired_yaw_rate = 0.0f;
     if (sensors->velocity > 0.5f) {
-        float v = sensors->velocity;
-        desired_yaw_rate = v * tanf(sensors->steering_angle)
-                           / (TV_WHEELBASE_M + TV_K_US * v * v);
+        float v          = sensors->velocity;
+        desired_yaw_rate = v * tanf(sensors->steering_angle) / (TV_WHEELBASE_M + TV_K_US * v * v);
     }
 
     /* Step 1b: fuse the IMU yaw rate with a wheel-speed estimate. The wheel
@@ -111,17 +118,23 @@ void torque_vectoring_update(const SensorData *sensors,
     float r_rear   = (v_rr - v_rl) / TV_TRACK_WIDTH_M;
     float r_wheels = 0.5f * (r_front + r_rear);
 
-    float yaw_rate_est = (1.0f - TV_WHEEL_YAW_TRUST) * sensors->yaw_rate
-                         +        TV_WHEEL_YAW_TRUST  * r_wheels;
+    float yaw_rate_est
+        = (1.0f - TV_WHEEL_YAW_TRUST) * sensors->yaw_rate + TV_WHEEL_YAW_TRUST * r_wheels;
 
     /* Step 2: yaw error, with a deadband so the bias does not chatter on noise. */
     float yaw_error = desired_yaw_rate - yaw_rate_est;
-    if (yaw_error >  TV_YAW_DEADBAND) yaw_error -= TV_YAW_DEADBAND;
-    else if (yaw_error < -TV_YAW_DEADBAND) yaw_error += TV_YAW_DEADBAND;
-    else yaw_error = 0.0f;
+    if (yaw_error > TV_YAW_DEADBAND)
+        yaw_error -= TV_YAW_DEADBAND;
+    else if (yaw_error < -TV_YAW_DEADBAND)
+        yaw_error += TV_YAW_DEADBAND;
+    else
+        yaw_error = 0.0f;
 
     /* Seed the derivative memory on the first call so it does not see a spike. */
-    if (!g_primed) { g_prev_error = yaw_error; g_primed = 1; }
+    if (!g_primed) {
+        g_prev_error = yaw_error;
+        g_primed     = 1;
+    }
 
     /* Step 3: scale the master gain inversely with speed so the yaw response
      * stays consistent across the speed range. Capped near standstill. */
@@ -146,33 +159,41 @@ void torque_vectoring_update(const SensorData *sensors,
     g_prev_error  = yaw_error;
 
     /* Provisional integral update (may be rolled back by anti-windup below). */
-    float ki = TV_KI_FRAC * effective_kp;
+    float ki         = TV_KI_FRAC * effective_kp;
     float integ_next = g_integ + yaw_error * CONTROL_DT_S;
     /* Hard cap the integral contribution to bias. */
     float i_contrib = ki * integ_next;
-    if (i_contrib >  TV_I_MAX_NM) { integ_next =  TV_I_MAX_NM / (ki > 1e-6f ? ki : 1e-6f); }
-    if (i_contrib < -TV_I_MAX_NM) { integ_next = -TV_I_MAX_NM / (ki > 1e-6f ? ki : 1e-6f); }
+    if (i_contrib > TV_I_MAX_NM) {
+        integ_next = TV_I_MAX_NM / (ki > 1e-6f ? ki : 1e-6f);
+    }
+    if (i_contrib < -TV_I_MAX_NM) {
+        integ_next = -TV_I_MAX_NM / (ki > 1e-6f ? ki : 1e-6f);
+    }
     float i_term = ki * integ_next;
 
     float bias = 0.0f;
-    if (kp_yaw > 0.0f)
-        bias = ff + p_term + i_term + d_term;
+    if (kp_yaw > 0.0f) bias = ff + p_term + i_term + d_term;
 
     /* Clamp total bias to half the motor peak. This lets the inner wheel go
      * into regen while the outer drives, for a stronger moment. */
-    float max_bias = MAX_MOTOR_TORQUE_NM * 0.5f;
-    int   bias_clamped = 0;
-    if (bias >  max_bias) { bias =  max_bias; bias_clamped = 1; }
-    if (bias < -max_bias) { bias = -max_bias; bias_clamped = 1; }
+    float max_bias   = MAX_MOTOR_TORQUE_NM * 0.5f;
+    int bias_clamped = 0;
+    if (bias > max_bias) {
+        bias         = max_bias;
+        bias_clamped = 1;
+    }
+    if (bias < -max_bias) {
+        bias         = -max_bias;
+        bias_clamped = 1;
+    }
 
     /* Anti-windup: only commit the integrator when the bias is not clamped, or
      * the error is driving it back out of saturation. Otherwise hold it. */
     float integ_prev = g_integ;
     if (kp_yaw <= 0.0f) {
         g_integ = 0.0f;
-    } else if (!bias_clamped ||
-               (bias >= max_bias && yaw_error < 0.0f) ||
-               (bias <= -max_bias && yaw_error > 0.0f)) {
+    } else if (!bias_clamped || (bias >= max_bias && yaw_error < 0.0f)
+        || (bias <= -max_bias && yaw_error > 0.0f)) {
         g_integ = integ_next;
     }
 
@@ -190,18 +211,15 @@ void torque_vectoring_update(const SensorData *sensors,
 
     /* Step 8: clamp to motor limits while preserving the differential, so a
      * saturated outer wheel does not collapse the yaw moment. */
-    int sat_f = clamp_axle_preserving(base_per_wheel - bias_front * 0.5f,
-                                      base_per_wheel + bias_front * 0.5f,
-                                      &out->fl, &out->fr);
-    int sat_r = clamp_axle_preserving(base_per_wheel - bias_rear * 0.5f,
-                                      base_per_wheel + bias_rear * 0.5f,
-                                      &out->rl, &out->rr);
+    int sat_f = clamp_axle_preserving(
+        base_per_wheel - bias_front * 0.5f, base_per_wheel + bias_front * 0.5f, &out->fl, &out->fr);
+    int sat_r = clamp_axle_preserving(
+        base_per_wheel - bias_rear * 0.5f, base_per_wheel + bias_rear * 0.5f, &out->rl, &out->rr);
 
     /* If a motor physically saturated while the error still drove the bias the
      * same way, roll the integrator back so it cannot wind up. */
     if ((sat_f || sat_r) && kp_yaw > 0.0f) {
-        if ((bias >= 0.0f && yaw_error > 0.0f) ||
-            (bias <  0.0f && yaw_error < 0.0f))
+        if ((bias >= 0.0f && yaw_error > 0.0f) || (bias < 0.0f && yaw_error < 0.0f))
             g_integ = integ_prev;
     }
 }

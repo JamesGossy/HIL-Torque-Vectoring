@@ -1,7 +1,7 @@
 #ifndef VEHICLE_CONFIG_H
 #define VEHICLE_CONFIG_H
 
-#include <math.h>   /* sqrtf, for the grip helpers below */
+#include <math.h> /* sqrtf, for the grip helpers below */
 
 /* =========================================================================
  * shared/vehicle_config.h  -  M25 vehicle parameters
@@ -11,15 +11,15 @@
  * ========================================================================= */
 
 /* ---- M25 geometry ---- */
-#define WHEELBASE_M          1.55f   /* lf + lr, metres                    */
-#define TRACK_WIDTH_M        1.30f   /* front = rear track width           */
-#define TRACK_WIDTH_FRONT_M  TRACK_WIDTH_M
-#define TRACK_WIDTH_REAR_M   TRACK_WIDTH_M
-#define WHEEL_RADIUS_M       0.254f  /* nominal tyre rolling radius        */
-#define GEAR_RATIO           15.47f  /* motor-to-wheel gear ratio          */
-#define CG_TO_FRONT_M        0.77f   /* CG → front axle (lf)              */
-#define CG_TO_REAR_M         0.78f   /* CG → rear axle  (lr)              */
-#define CG_HEIGHT_M          0.28f   /* CG height, metres                  */
+#define WHEELBASE_M         1.55f /* lf + lr, metres                    */
+#define TRACK_WIDTH_M       1.30f /* front = rear track width           */
+#define TRACK_WIDTH_FRONT_M TRACK_WIDTH_M
+#define TRACK_WIDTH_REAR_M  TRACK_WIDTH_M
+#define WHEEL_RADIUS_M      0.254f /* nominal tyre rolling radius        */
+#define GEAR_RATIO          15.47f /* motor-to-wheel gear ratio          */
+#define CG_TO_FRONT_M       0.77f  /* CG → front axle (lf)              */
+#define CG_TO_REAR_M        0.78f  /* CG → rear axle  (lr)              */
+#define CG_HEIGHT_M         0.28f  /* CG height, metres                  */
 
 /* ---- M25 mass / inertia ---- */
 #define MASS_KG          260.0f
@@ -34,15 +34,15 @@
  * undamped feedback loop that rings at the sim step rate - seen as violently
  * jittery yaw rate and wheel torques.  ~80 ms is a representative roll-response
  * time for a stiff race car. */
-#define LOAD_TRANSFER_TAU_S  0.08f
+#define LOAD_TRANSFER_TAU_S 0.08f
 
 /* ---- Wheel / drivetrain ---- */
-#define MAX_SPEED_MS     30.0f
+#define MAX_SPEED_MS 30.0f
 
 /* ---- Ackermann steering ratios ---- */
 /* steer_wheel_angle * ratio = wheel angle (rad)                             */
-#define INNER_STEERING_RATIO  0.255625f
-#define OUTER_STEERING_RATIO  0.20375f
+#define INNER_STEERING_RATIO 0.255625f
+#define OUTER_STEERING_RATIO 0.20375f
 
 
 /* ---- Pacejka lateral tyre model (M25 fitted coefficients) ----
@@ -54,13 +54,13 @@
  *   D  - peak factor       (peak Fy / Fz; ~= peak friction coefficient)
  *   E  - curvature factor  (shifts the slip angle at peak; 0 = symmetric)
  */
-#define TYRE_B   12.33675f
-#define TYRE_C   -1.4203069f
-#define TYRE_D    1.43284504f
-#define TYRE_E    0.422900f
+#define TYRE_B 12.33675f
+#define TYRE_C -1.4203069f
+#define TYRE_D 1.43284504f
+#define TYRE_E 0.422900f
 
 /* Effective peak friction for the yaw-rate stability limiter */
-#define MU_TYRE  1.1f
+#define MU_TYRE 1.1f
 
 /* Peak friction coefficient for the per-wheel combined-slip FRICTION CIRCLE
  * (vehicle_model.c step 6b): sqrt(Fx^2 + Fy^2) <= MU_GRIP * Fz.  Set near the
@@ -68,13 +68,13 @@
  * essentially unaffected and only the COMBINED longitudinal+lateral demand is
  * clipped.  This is the model's primary grip limiter now; the r <= mu*g/v yaw
  * clamp is only a numerical safety net behind it. */
-#define MU_GRIP  1.4f
+#define MU_GRIP 1.4f
 
 /* ---- Aerodynamics (M25) ---- */
-#define CLA          5.1f    /* lift coefficient (downforce positive)       */
-#define CDA          1.8f    /* drag coefficient                            */
-#define AERO_AREA    1.0f    /* reference area, m²                         */
-#define AIR_DENSITY  1.29f   /* kg/m³                                      */
+#define CLA         5.1f  /* lift coefficient (downforce positive)       */
+#define CDA         1.8f  /* drag coefficient                            */
+#define AERO_AREA   1.0f  /* reference area, m²                         */
+#define AIR_DENSITY 1.29f /* kg/m³                                      */
 
 
 /* ---- Speed-dependent lateral grip (downforce) ----
@@ -96,8 +96,7 @@
  *   AERO_GRIP_COEF = MU_GRIP * (0.5 * rho * CLA * AERO_AREA) / m
  *                  = extra m/s^2 of lateral grip per (m/s)^2 of speed.
  */
-#define AERO_GRIP_COEF \
-    (MU_GRIP * 0.5f * AIR_DENSITY * CLA * AERO_AREA / MASS_KG)
+#define AERO_GRIP_COEF (MU_GRIP * 0.5f * AIR_DENSITY * CLA * AERO_AREA / MASS_KG)
 
 /* Speed-dependent lateral grip, m/s^2, for a given low-speed base budget. */
 static inline float lateral_grip_accel(float base, float v)
@@ -117,7 +116,7 @@ static inline float apex_speed(float base, float kappa, float v_cap)
 {
     if (kappa <= 1e-4f) return v_cap;
     float denom = kappa - AERO_GRIP_COEF;
-    if (denom <= 1e-4f) return v_cap;          /* downforce-dominated corner */
+    if (denom <= 1e-4f) return v_cap; /* downforce-dominated corner */
     float v = sqrtf(base / denom);
     return (v < v_cap) ? v : v_cap;
 }
