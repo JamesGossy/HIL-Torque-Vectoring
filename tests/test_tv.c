@@ -102,9 +102,13 @@ static void test_left_turn_biases_right_wheels(void)
 
     ASSERT(t.fr > t.fl);   /* right (outer) > left (inner) */
     ASSERT(t.rr > t.rl);
-    /* The differential is split rear-biased (TV_REAR_SHARE), so the rear axle's
-     * differential is larger than the front's - front == rear no longer holds. */
-    ASSERT((t.rr - t.rl) > (t.fr - t.fl));
+    /* The differential is split front/rear by TV_REAR_SHARE: the rear axle's
+     * differential is to the front's as TV_REAR_SHARE is to (1 - TV_REAR_SHARE).
+     * Assert that ratio directly so the test tracks the tuning instead of
+     * hard-coding which axle carries the larger share. */
+    float diff_f = t.fr - t.fl;
+    float diff_r = t.rr - t.rl;
+    ASSERT_NEAR(diff_r * (1.0f - TV_REAR_SHARE), diff_f * TV_REAR_SHARE, 0.05f);
 }
 
 /*

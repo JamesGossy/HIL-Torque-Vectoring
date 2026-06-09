@@ -15,41 +15,14 @@
 
 
 /* ============================================================ */
-/* DRIVER: steering (Pure Pursuit)                              */
+/* DRIVER: steering (model-based LQR)                           */
 /* ============================================================ */
 
-/* Look-ahead distance grows with speed: Ld = clamp(K_LOOKAHEAD*v, MIN, MAX).
- * A short floor lets the car commit to a tight apex; the cap keeps the line
- * smooth at speed. */
-#ifndef K_LOOKAHEAD
-#define K_LOOKAHEAD       0.45f   /* look-ahead time, s (Ld = this * v) */
-#endif
-#ifndef LOOKAHEAD_MIN_M
-#define LOOKAHEAD_MIN_M   2.8f    /* min look-ahead, m */
-#endif
-#ifndef LOOKAHEAD_MAX_M
-#define LOOKAHEAD_MAX_M   9.0f    /* max look-ahead, m */
-#endif
-
-/* Cross-track pull: Pure Pursuit has no restoring term once the car and its
- * look-ahead point share an offset, so this pulls the car back to the line.
- * It is tuned together with the corner-speed budget: the faster the corner
- * speed, the more pull is needed to keep the car off the apex cones. With the
- * minimum-lap-time line and the 5.0 m/s^2 budget, 0.80 is the value that keeps
- * the car cleanly on the line. With the high (9.0) lateral budget the car
- * corners much faster and drifts wide at 0.80, so it is pulled up to 1.25, which
- * both cleans the lap and tightens the line through the fast corners. Past ~1.3
- * it starts to oscillate. */
-#ifndef K_CTE_PP
-#define K_CTE_PP          1.25f   /* cross-track restoring trim, rad/m */
-#endif
-
-/* In a corner the look-ahead floor is set to K_LD_RADIUS * corner_radius, so
- * the look-ahead point lands near the apex on the real radius instead of
- * chording across it. Scaling with radius makes it track-independent.
- * LOOKAHEAD_ABS_MIN stops it collapsing to zero on a hairpin. */
-#define K_LD_RADIUS       0.9f    /* look-ahead as a fraction of corner radius */
-#define LOOKAHEAD_ABS_MIN 1.6f    /* hard lower bound on look-ahead, m */
+/* Steering is a model-based LQR law on the dynamic-bicycle lateral error
+ * dynamics. Its tuning knobs (the Q/R cost weights and the cross-track
+ * integrator) live with the controller in HIL_Firmware/src/lqr_steer.c, since
+ * they are meaningless without the model alongside them. Only the actuator-level
+ * limits that bound any steering law live here. */
 
 /* Steering reference limit. The vehicle model scales this by the Ackermann
  * ratios (~0.20-0.26) to get the road-wheel angle, so the reference is much
@@ -83,20 +56,17 @@
 #endif
 
 /* Corner-speed budget: v_corner = sqrt(a_lat / kappa). The tyres can hold
- * ~13 m/s^2, so this is conservative on purpose, leaving the tracker margin to
- * correct. This is the dominant lap-time lever on this corner-heavy track.
+ * ~13 m/s^2; this is the dominant lap-time lever on this corner-heavy track.
  *
- * 5.0 (with K_CTE_PP 0.80 and the minimum-LAP-TIME racing line, PP_GRIP_ACCEL
- * matched to this value) is the fastest setting that still runs a fully clean
- * lap (~32.4 s). It is well above the old 3.7 because the lap-time line opens
- * the slow corners up to a feasible radius - a wider arc is followable at more
- * speed, so the budget that used to clip apex cones no longer does. These three
- * gains are coupled: raising this needs the line (PP_GRIP_ACCEL) shaped for the
- * same budget and usually some K_CTE_PP trim. Past ~5.0 the car clips cones
- * regardless of the line (5.1 falls off a cliff). Re-tune them together and
- * always confirm 0 off-track with `make eval`. */
+ * 13.72 is the value from the robustness-aware sweep (tools/smart_sweep_lqr.py).
+ * The LQR tracker holds the line tightly enough to carry nearly the full grip
+ * budget, where the old geometric tracker clipped apex cones above ~5. It is
+ * coupled with the racing line (PP_GRIP_ACCEL, shaped for the same budget) and
+ * the hairpin radius floor (PP_MIN_RADIUS_M, which must open as the budget
+ * rises, or the car saturates the steering and stalls at the hairpin). Re-tune
+ * them together and always confirm 0 off-track with `make eval`. */
 #ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2   9.0f
+#define MAX_LATERAL_ACCEL_MS2   13.7214f
 #endif
 
 #define MAX_BRAKE_DECEL_MS2     5.6f   /* max straight-line braking decel, m/s^2 */
@@ -113,14 +83,14 @@
  * everywhere. Set a little above MAX_LATERAL_ACCEL_MS2 (steady cornering is kept
  * conservative; the combined circle has a touch more to give).
  *
- * 7.0 is the knee of the trade: it pulls the worst apex cross-track error down
- * (the car brakes earlier for the hairpins and stops washing the front wide)
- * for only ~0.5 s of lap time, because it slows the hairpins and leaves the fast
- * corners alone. Raising it toward ~8 makes the circle never bind (= the old
- * flat budget, more apex drift); lowering it brakes ever earlier (smoother but
- * slower). Confirm 0 off-track with `make eval` after changing it. */
+ * 7.71 (from the sweep) sits just below the lateral budget: it pulls the worst
+ * apex cross-track error down (the car brakes earlier for the hairpins and stops
+ * washing the front wide) for little lap time, because it slows the hairpins and
+ * leaves the fast corners alone. Raising it makes the circle never bind (more
+ * apex drift); lowering it brakes ever earlier (smoother but slower). Confirm 0
+ * off-track with `make eval` after changing it. */
 #ifndef GG_ACCEL_MS2
-#define GG_ACCEL_MS2            7.0f
+#define GG_ACCEL_MS2            7.7134f
 #endif
 
 #define SPEED_PLAN_HORIZON_M   80.0f   /* how far ahead to scan for corners, m */
@@ -145,14 +115,13 @@
  * opens. Set below the ~13 m/s^2 peak so the cut bites during normal cornering
  * (using the true peak left the car powering wide on exit).
  *
- * Raised to 11.0 with the high lateral budget: the corner-exit throttle cut was
- * over-conservative for how much grip the car actually has, leaving exit
- * acceleration on the table on a track that is ~80% corners. 11.0 lets the car
- * power out harder while staying clean; pushing toward 13 powers wide off the
- * line (off-track), so this is the clean edge. Coupled with K_CTE_PP - more exit
- * power needs more cross-track pull to hold the line. */
+ * 14.10 (from the sweep) lets the car power out hard with the high lateral
+ * budget while staying clean: the corner-exit throttle cut was over-conservative
+ * for how much grip the car actually has, leaving exit acceleration on the table
+ * on a track that is ~80% corners. Lowering it powers out more weakly (slower
+ * exits); raising it powers wide off the line (off-track). */
 #ifndef LAT_GRIP_REF_MS2
-#define LAT_GRIP_REF_MS2   11.0f
+#define LAT_GRIP_REF_MS2   14.1014f
 #endif
 
 /* Throttle integral, to trim the steady-state speed deficit on corner exit.
@@ -183,7 +152,9 @@
 /* Master proportional gain, Nm of torque bias per rad/s of yaw error. Tunable
  * at runtime with [ and ]. Ki and Kd are fractions of it, so the loop scales
  * together when you change this. */
-#define KP_YAW_DEFAULT     60.0f
+#ifndef KP_YAW_DEFAULT
+#define KP_YAW_DEFAULT     48.5755f
+#endif
 
 /* Integral and derivative gains, as a fraction of the master gain. I erases the
  * steady-state understeer; D damps the turn-in. */
@@ -198,7 +169,7 @@
  * differential from the cornering demand so the yaw moment is there before any
  * error develops. */
 #ifndef TV_KFF
-#define TV_KFF             12.0f
+#define TV_KFF             13.8448f
 #endif
 
 /* Cap on the bias the integral term alone can contribute, Nm. */
@@ -218,11 +189,10 @@
  * so the yaw response stays consistent across the speed range. */
 #define TV_SPEED_REF_MS    12.0f
 
-/* Front/rear split of the yaw-moment differential. The rear carries the larger
- * share because the rear tyres spend less grip on steering, leaving more for
- * the differential. 0.5 gives an even split. */
+/* Front/rear split of the yaw-moment differential. 0.5 gives an even split;
+ * the sweep settled near 0.46 (a slight front bias) for this car/line. */
 #ifndef TV_REAR_SHARE
-#define TV_REAR_SHARE      0.6f
+#define TV_REAR_SHARE      0.4602f
 #endif
 
 /* Weight on the wheel-speed yaw estimate when fused with the IMU. 0 = IMU only,

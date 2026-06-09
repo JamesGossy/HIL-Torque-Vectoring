@@ -1,4 +1,5 @@
 #include "../include/motion_control.h"
+#include "../include/lqr_steer.h"
 #include <math.h>
 
 static const float PI = 3.14159265358979323846f;
@@ -148,16 +149,15 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
 
 /*
  * Find the racing-line segment nearest to (px, py) near center_idx. Returns the
- * segment's start index, writes the clamped projection t in [0,1] to *out_t and
- * the signed cross-track error (+ve when right of the path) to *out_cte.
+ * segment's start index and writes the signed cross-track error (+ve when right
+ * of the path) to *out_cte.
  */
 static int find_nearest_segment(const Track *track, float px, float py,
-                                int center_idx, float *out_t, float *out_cte)
+                                int center_idx, float *out_cte)
 {
     int   count    = track->count;
     int   best     = center_idx;
     float best_d2  = 1e18f;
-    float best_t   = 0.0f;
     float best_cte = 0.0f;
     int   k;
 
@@ -183,14 +183,12 @@ static int find_nearest_segment(const Track *track, float px, float py,
         if (d2 < best_d2) {
             best_d2 = d2;
             best    = i0;
-            best_t  = t;
             /* signed CTE: +ve when right of the segment direction */
             float inv = 1.0f / sqrtf(len2);
             best_cte  = (dx * (-ey) + dy * ex) * inv * -1.0f;
         }
     }
 
-    *out_t = best_t;
     if (out_cte) *out_cte = best_cte;
     return best;
 }
@@ -225,39 +223,6 @@ static float lookahead_curvature(const Track *track, int start_idx, float span)
         if (acc > span) break;
     }
     return kmax;
-}
-
-
-/* ---- Pure Pursuit look-ahead point finder ---- */
-
-/*
- * Walk the racing line forward from start_idx until Ld metres of arc length,
- * then write that point to (*lx,*ly). Stays on the line wherever the car is.
- */
-static void lookahead_point(const Track *track, int start_idx,
-                            float Ld, float *lx, float *ly)
-{
-    int   count = track->count;
-    float acc   = 0.0f;
-    int   i;
-
-    for (i = 0; i < count; i++) {
-        int a = (start_idx + i)     % count;
-        int b = (start_idx + i + 1) % count;
-        float ex = track->points[b].x - track->points[a].x;
-        float ey = track->points[b].y - track->points[a].y;
-        float seg = sqrtf(ex*ex + ey*ey);
-        if (acc + seg >= Ld) {
-            float r = (seg > 1e-6f) ? (Ld - acc) / seg : 0.0f;
-            *lx = track->points[a].x + r * ex;
-            *ly = track->points[a].y + r * ey;
-            return;
-        }
-        acc += seg;
-    }
-    /* Fallback: aim at the start waypoint. */
-    *lx = track->points[start_idx % count].x;
-    *ly = track->points[start_idx % count].y;
 }
 
 
@@ -299,50 +264,40 @@ float motion_control_update(VehicleState *state, const Track *track,
 
     if (s_path_idx < 0 || s_path_idx >= count) s_path_idx = track->current_index;
 
-    /* STEERING: Pure Pursuit (geometric look-ahead) + cone safety net. */
-
-    /* Pure Pursuit steers the rear axle through a look-ahead point. The front
-     * axle is projected to advance the progress index and read the CTE trim. */
-    float ra_x = state->x - CG_TO_REAR_M * cosf(state->heading);
-    float ra_y = state->y - CG_TO_REAR_M * sinf(state->heading);
+    /* STEERING: model-based LQR on the dynamic-bicycle error dynamics, plus a
+     * cone-repulsion safety net. The front axle is projected onto the racing
+     * line to read the cross-track error and advance the progress index. */
     float fa_x = state->x + CG_TO_FRONT_M * cosf(state->heading);
     float fa_y = state->y + CG_TO_FRONT_M * sinf(state->heading);
 
-    float t, cte;
-    int   i0 = find_nearest_segment(track, fa_x, fa_y, s_path_idx, &t, &cte);
+    float cte;
+    int   i0 = find_nearest_segment(track, fa_x, fa_y, s_path_idx, &cte);
 
     s_path_idx = i0;
 
-    /* Speed-adaptive look-ahead: short in slow corners, long at speed. */
-    float Ld = K_LOOKAHEAD * vx;
-    if (Ld < LOOKAHEAD_MIN_M) Ld = LOOKAHEAD_MIN_M;
-    if (Ld > LOOKAHEAD_MAX_M) Ld = LOOKAHEAD_MAX_M;
-
-    /* Curvature-aware look-ahead floor: tie the floor to corner radius so the
-     * look-ahead point lands near the apex in tight corners. Only lowers Ld. */
+    /* LQR error state: e1 = signed cross-track error, e2 = heading error vs the
+     * path tangent at the nearest segment, path_kappa = local (signed) curvature. */
+    float steer;
     {
-        float kappa_ahead = lookahead_curvature(track, i0, Ld);
-        if (kappa_ahead > 1e-4f) {
-            float ld_floor = K_LD_RADIUS / kappa_ahead;   /* = K_LD_RADIUS * R */
-            if (ld_floor < LOOKAHEAD_ABS_MIN) ld_floor = LOOKAHEAD_ABS_MIN;
-            if (ld_floor < LOOKAHEAD_MIN_M && Ld > ld_floor) Ld = ld_floor;
-        }
+        int   i1   = (i0 + 1) % count;
+        float ph   = atan2f(track->points[i1].y - track->points[i0].y,
+                            track->points[i1].x - track->points[i0].x);
+        float e2   = wrap_pi(state->heading - ph);
+        /* e1 sign: cte is +ve when the car is right of the path; the error model
+         * takes +e1 to the left, so negate. */
+        float e1   = -cte;
+        float kp   = lookahead_curvature(track, i0, 1.0f);  /* curvature at car */
+        /* sign of curvature: + when the path turns left (CCW). Derive from the
+         * change in path heading across the nearest segment. */
+        int   i2   = (i0 + 2) % count;
+        float ph2  = atan2f(track->points[i2].y - track->points[i1].y,
+                            track->points[i2].x - track->points[i1].x);
+        float dpsi = wrap_pi(ph2 - ph);
+        float kappa_signed = (dpsi >= 0.0f ? kp : -kp);
+
+        steer = lqr_steer_command(vx, state->vy, e1, e2,
+                                  state->yaw_rate, kappa_signed);
     }
-
-    float lx, ly;
-    lookahead_point(track, i0, Ld, &lx, &ly);
-
-    /* alpha = angle from car heading to the look-ahead point at the rear axle. */
-    float dx_l    = lx - ra_x;
-    float dy_l    = ly - ra_y;
-    float Ld_act  = sqrtf(dx_l*dx_l + dy_l*dy_l);
-    if (Ld_act < 1e-3f) Ld_act = 1e-3f;
-    float alpha   = wrap_pi(atan2f(dy_l, dx_l) - state->heading);
-    float steer_pp = atan2f(2.0f * WHEELBASE_M * sinf(alpha), Ld_act);
-
-    /* Cross-track restoring trim: small proportional pull back onto the line.
-     * cte > 0 (right of line) steers left (+). */
-    float steer = steer_pp + K_CTE_PP * cte;
 
     /* Gentle cone repulsion as a safety net. */
     steer += boundary_steer_correction(state->x, state->y, track);

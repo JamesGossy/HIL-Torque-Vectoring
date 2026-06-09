@@ -73,36 +73,30 @@ jobs:
               echo "Δ column is the change versus the merge base."
             fi
             echo ""
-            python3 tools/compare_eval.py --current current_result.txt $BASE_ARG
+            python3 tools/tool_compare_eval.py --current current_result.txt $BASE_ARG
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Soft regression gate: lap-time regression beyond tolerance or an
           # increase in off-track ticks vs base. Advisory only — emitted as a
           # warning, does not fail the job (the hard gates below do that).
           if [ -n "$BASE_ARG" ]; then
-            python3 tools/compare_eval.py --gate --current current_result.txt $BASE_ARG >/dev/null \
+            python3 tools/tool_compare_eval.py --gate --current current_result.txt $BASE_ARG >/dev/null \
               || echo "::warning::Lap metrics regressed vs base (see the delta table in the run summary)"
           fi
 
           # Regression guard: fail the job if the car never completed a lap, or
-          # went grossly off-track.  A small off-track count is tolerated because
-          # the honest grip model (per-wheel friction circle) leaves the car
-          # grazing the single tightest FSG hairpin (~3.2 m radius) that is past
-          # its steering/grip limit — a real car limitation, not a regression.
-          # The proper fix is a feasibility-aware racing line; until then the
-          # goal remains 0, but we gate on a gross-failure threshold so the known
-          # apex graze does not red-flag every build.
-          OFFTRACK_LIMIT=8
+          # went off-track. The LQR tracker on the feasibility-aware racing line
+          # runs a fully clean lap (0 off-track), so off-track is now a hard gate
+          # at 0 — any cone contact is a real regression, not a tolerated graze.
+          OFFTRACK_LIMIT=0
           FAIL=0
           if [ "${EVAL_laps}" = "0" ]; then
             echo "::error::Car did not complete a lap within 50 s"
             FAIL=1
           fi
           if [ "${EVAL_offtrack}" -gt "$OFFTRACK_LIMIT" ]; then
-            echo "::error::Car went grossly off-track (${EVAL_offtrack} ticks > ${OFFTRACK_LIMIT})"
+            echo "::error::Car went off-track (${EVAL_offtrack} ticks; clean lap is 0)"
             FAIL=1
-          elif [ "${EVAL_offtrack}" != "0" ]; then
-            echo "::warning::${EVAL_offtrack} off-track ticks (known tight-hairpin graze; goal is 0 via a feasibility-aware line)"
           fi
           if [ "${EVAL_sharp_viol}" != "0" ]; then
             echo "::warning::${EVAL_sharp_viol} sharp-corner ticks exceeded 2 m cross-track error"

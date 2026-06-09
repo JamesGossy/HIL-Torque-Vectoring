@@ -65,13 +65,14 @@ HIL-Torque-Vectoring/
 |   |-- src/vehicle_model.c   The car physics (per-wheel dynamic bicycle model).
 |   |-- src/track.c           The FSG 2024 cone track (measured cone positions).
 |   |-- src/path_planning.c   Builds the racing-line waypoints from the cones.
-|   `-- src/motion_control.c  The virtual driver: Pure Pursuit + speed planner.
+|   |-- src/motion_control.c  The virtual driver: LQR steering + speed planner.
+|   `-- src/lqr_steer.c       The model-based LQR steering law.
 |
 |-- ECU_Firmware/             The ECU side. Only sees sensor data.
 |   `-- src/torque_vectoring.c  The TV algorithm: splits torque four ways.
 |
 |-- tests/                    Unit tests (make test).
-|-- tools/                    Diagnostics: eval_lap, perf_sim, sweep.sh, CI helpers.
+|-- tools/                    Diagnostics (tool_*): tool_eval_lap, tool_perf_sim, tool_smart_sweep_lqr, CI helpers.
 `-- ECU_Hardware/             Placeholder for PCB and wiring docs.
 ```
 
@@ -79,7 +80,7 @@ There are three roles, kept in separate files on purpose:
 
 | Role | File | What it does |
 |------|------|--------------|
-| Driver | `motion_control.c` | Pure Pursuit path tracking and curvature speed planning |
+| Driver | `motion_control.c` | LQR path tracking (`lqr_steer.c`) and curvature speed planning |
 | Car | `vehicle_model.c` | Updates the car physics each tick |
 | ECU | `torque_vectoring.c` | Splits the throttle demand into four wheel torques |
 
@@ -91,9 +92,11 @@ so the ECU cannot accidentally depend on anything in `HIL_Firmware/`.
 
 ## Tuning parameters
 
-Every value you would tune lives in `shared/parameters_config.h`: the driver
-gains (look-ahead, cross-track pull, speed budget, throttle/brake), the cone
-safety net, and the torque-vectoring gains. The car's physical constants (mass,
+Most values you would tune live in `shared/parameters_config.h`: the speed
+budget, throttle/brake gains, the cone safety net, and the torque-vectoring
+gains. The LQR steering cost weights live with the controller in
+`HIL_Firmware/src/lqr_steer.c`, and the racing-line shape parameters in
+`HIL_Firmware/src/path_planning.c`. The car's physical constants (mass,
 geometry, tyre coefficients) are separate, in `shared/vehicle_config.h`, because
 they describe the hardware rather than a tuning choice.
 
@@ -209,12 +212,15 @@ and the yaw moment, is held as far as the motors allow.
 
 ## The motion controller (virtual driver)
 
-**Steering: Pure Pursuit.** It aims at a point on the racing line a look-ahead
-distance ahead of the rear axle and computes the single-arc steer angle that
-drives the rear axle through it. A short look-ahead at low speed commits the car
-to a tight apex; a longer one at speed keeps the line smooth. A small cross-track
-trim pulls the car back when it drifts off the line, and a cone repulsion term is
-a safety net near the boundary.
+**Steering: model-based LQR (`lqr_steer.c`).** The front axle is projected onto
+the racing line to read the cross-track error `e1` and heading error `e2`. An
+infinite-horizon LQR on the dynamic-bicycle lateral error dynamics (gain
+recomputed as speed changes, the linear-time-varying part) computes the steer
+command, with a curvature feedforward that pre-loads the steady-state steer for
+the upcoming radius and a small cross-track integrator that removes the residual
+steady-state offset. A cone-repulsion term is a safety net near the boundary.
+This tracks the line tightly (mean cross-track error ~0.09 m), which lets the car
+carry nearly the full grip budget for a clean ~26.5 s lap.
 
 **Speed: two-pass planner.** A forward pass caps each waypoint's speed from its
 curvature (`v = sqrt(a_lat / kappa)`), then a backward pass propagates braking
@@ -241,8 +247,11 @@ as possible and prints lap-tracking metrics, ending in a machine-readable
 `RESULT` line. A good change keeps **off-track ticks at 0** and **completes a
 lap**, and should not regress mean or worst cross-track error or lap time.
 
-`tools/sweep.sh` sweeps the highest-leverage gains and prints a table sorted by
-clean-lap time. Only accept a config with 0 off-track ticks.
+`tools/tool_smart_sweep_lqr.py` is a robustness-aware optimiser: it searches the
+tuning space and scores each candidate by its worst perturbed neighbour, so it
+finds a fast config that is also robust to small parameter drift (not a
+knife-edge clean only at one point). Only accept a config with 0 off-track ticks.
+`tools/tool_robust_check_lqr.py` audits how close a config sits to the off-track edge.
 
 
 ## Things to try
@@ -255,10 +264,11 @@ corners.
 gain of 0 is the same as TV off.
 
 **Change the driver.** Edit `shared/parameters_config.h`. `TARGET_SPEED_MS` sets
-the straight-line cruise speed, `K_CTE_PP` sets how hard the tracker pulls back
-to the line, and `MAX_LATERAL_ACCEL_MS2` sets the corner-speed budget. The speed
-budget and the cross-track pull interact, so after raising the budget you usually
-need more pull to stay clean. Validate with `make eval`.
+the straight-line cruise speed and `MAX_LATERAL_ACCEL_MS2` sets the corner-speed
+budget; the LQR steering cost weights (how hard it pulls back to the line) live
+in `HIL_Firmware/src/lqr_steer.c`. The speed budget, the racing line, and the
+steering gains interact, so re-tune them together (`tools/tool_smart_sweep_lqr.py`)
+and validate with `make eval`.
 
 **Change the track.** Edit the cone positions in `HIL_Firmware/src/track.c`.
 `path_plan()` rebuilds the racing line automatically.

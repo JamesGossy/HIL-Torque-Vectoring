@@ -83,6 +83,15 @@ void torque_vectoring_update(const SensorData *sensors,
     /* Step 1: desired yaw rate. The v^2 understeer term bends the reference down
      * to the yaw rate the car can actually reach:
      *   r = v * tan(delta) / (L + K_us * v^2). */
+    /* The desired yaw rate is intentionally computed from the INSTANTANEOUS
+     * steering angle and used un-filtered: the feedforward must put the yaw
+     * moment in the instant the steering moves (see Step 4), so the response is
+     * there before any error develops. The signal looks jittery on a plot
+     * because the path tracker moves the steering fast and tan() amplifies near
+     * lock, and the car's yaw rate cannot follow those spikes - but it is NOT
+     * meant to: the spikes are the feedforward reacting early, not a setpoint to
+     * track. Low-pass-filtering this reference was tried and measurably hurt the
+     * car (it delays the moment, so the car understeers into corners). */
     float desired_yaw_rate = 0.0f;
     if (sensors->velocity > 0.5f) {
         float v = sensors->velocity;
