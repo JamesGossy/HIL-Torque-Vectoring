@@ -1,5 +1,6 @@
 #include "../include/motion_control.h"
 #include "../include/lqr_steer.h"
+#include "../../shared/tunables.h"
 #include <math.h>
 
 static const float PI = 3.14159265358979323846f;
@@ -60,7 +61,7 @@ static float brake_decel_avail(float v, float kappa)
     /* Combined friction-circle budget grows with downforce (v^2), same as the
      * lateral grip: a_lat^2 + a_lon^2 <= gg(v)^2. So at speed (where braking
      * happens, before a corner) there is more total grip to brake with. */
-    float gg_acc = lateral_grip_accel(GG_ACCEL_MS2, v);
+    float gg_acc = lateral_grip_accel(g_GG_ACCEL_MS2, v);
     float a_lat  = v * v * kappa;
     float gg     = gg_acc * gg_acc;
     float a_lat2 = a_lat * a_lat;
@@ -109,11 +110,11 @@ static float plan_target_speed(const VehicleState *state, const Track *track, in
          * keeps the on-car plan conservative while still gaining most of the
          * downforce in the faster corners. The LINE is shaped for the full grip;
          * only what the car DRIVES is held back. */
-        float planner_base = MAX_LATERAL_ACCEL_MS2;
+        float planner_base = g_MAX_LATERAL_ACCEL_MS2;
         float full         = apex_speed(planner_base, kappa, TARGET_SPEED_MS);
         float flat         = (kappa > 1e-4f) ? sqrtf(planner_base / kappa) : TARGET_SPEED_MS;
         if (flat > TARGET_SPEED_MS) flat = TARGET_SPEED_MS;
-        v_limit[n] = flat + PLANNER_DOWNFORCE_FRAC * (full - flat);
+        v_limit[n] = flat + g_PLANNER_DOWNFORCE_FRAC * (full - flat);
         seg_k[n]   = kappa;
 
         float dx   = track->points[cnext].x - track->points[ccur].x;
@@ -358,7 +359,7 @@ float motion_control_update(VehicleState *state, const Track *track, float *out_
     if (speed_error >= 0.0f) {
         /* Traction circle: cut throttle by the lateral grip already in use, so
          * the car powers up only as the corner opens. Uses lagged ay_filt. */
-        float lat_ratio = fabsf(state->ay_filt) / LAT_GRIP_REF_MS2;
+        float lat_ratio = fabsf(state->ay_filt) / g_LAT_GRIP_REF_MS2;
         if (lat_ratio > 1.0f) lat_ratio = 1.0f;
         float grip_factor = sqrtf(1.0f - lat_ratio * lat_ratio);
 

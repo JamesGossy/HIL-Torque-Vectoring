@@ -16,6 +16,7 @@
 #include "../HIL_Firmware/include/track_parser.h"
 #include "../HIL_Firmware/include/motion_control.h"
 #include "../shared/tv_interface.h"
+#include "../shared/tunables.h"
 #include "../ECU_Firmware/include/torque_vectoring.h"
 
 #define DT 0.01f
@@ -77,6 +78,10 @@ int main(void)
     WheelTorques torques = { 0 };
     SensorData sensors   = { 0 };
 
+    /* Apply any TUNE_* env overrides before the racing line / LQR gain are built
+     * (both happen below), so the sweep can vary gains without a recompile. */
+    tunables_init_from_env();
+
     track_init(&track);
 
     float ih = atan2f(track.points[1].y - track.points[0].y, track.points[1].x - track.points[0].x);
@@ -133,7 +138,7 @@ int main(void)
         sensors.wheel_speed[WHEEL_RL] = state.wheelspeed[WHEEL_RL] * R2W;
         sensors.wheel_speed[WHEEL_RR] = state.wheelspeed[WHEEL_RR] * R2W;
 
-        torque_vectoring_update(&sensors, dq, KP_YAW_DEFAULT, &torques);
+        torque_vectoring_update(&sensors, dq, g_KP_YAW_DEFAULT, &torques);
         vehicle_model_update(&state, &torques, DT);
         track_update(&track, state.x, state.y);
 

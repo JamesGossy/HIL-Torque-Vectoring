@@ -3,7 +3,7 @@
 
 #include "track_parser.h"
 #include "vehicle_model.h"
-#include "../../shared/parameters_config.h"
+#include "../../shared/constants_config.h"
 
 /*
  * motion_control.h
@@ -22,7 +22,9 @@
  * waypoint back to the car. Throttle is faded out near full steering lock,
  * where the front tyres are saturated turning and extra power only pushes wide.
  *
- * All tunable gains live in shared/parameters_config.h.
+ * Fixed constants live in shared/constants_config.h; the swept gains (LQR cost
+ * weights, speed budget, racing-line shape) are runtime tunables in
+ * shared/tunables.c.
  */
 
 /*

@@ -16,6 +16,7 @@
 #include "../include/track_parser.h"
 #include "../include/motion_control.h"
 #include "../../shared/tv_interface.h"
+#include "../../shared/tunables.h"
 #include "../../ECU_Firmware/include/torque_vectoring.h"
 
 /*
@@ -153,6 +154,8 @@ int main(void)
     WheelTorques torques = { 0 };
     SensorData sensors   = { 0 };
 
+    tunables_init_from_env();
+
     track_init(&track);
 
     if (track.count < 2) {
@@ -196,7 +199,7 @@ int main(void)
     stdin_setup();
 
     int tv_enabled   = 1;
-    float kp_yaw     = KP_YAW_DEFAULT;
+    float kp_yaw     = g_KP_YAW_DEFAULT;
     int tick         = 0;
     int running      = 1;
     double sim_start = get_time_s();

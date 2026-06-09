@@ -1,6 +1,7 @@
 #include "../include/lqr_steer.h"
 #include "../../shared/vehicle_config.h"
-#include "../../shared/parameters_config.h"
+#include "../../shared/constants_config.h"
+#include "../../shared/tunables.h"
 #include <math.h>
 
 /*
@@ -180,13 +181,6 @@ static float cached_vx = -1.0f;
  * are tracking (not during a big transient). */
 static float e1_integral = 0.0f;
 
-#ifndef LQR_KI
-#define LQR_KI 7.9193f /* integral gain on e1, reference-rad per (m*s)   */
-#endif
-#ifndef LQR_I_MAX
-#define LQR_I_MAX 0.3000f /* clamp on the integral's steering contribution (sweep cap) */
-#endif
-
 /* Reset the integrator between independent runs / test cases. */
 void lqr_steer_reset(void)
 {
@@ -194,24 +188,10 @@ void lqr_steer_reset(void)
     cached_vx   = -1.0f;
 }
 
-/* Cost weights (the "tuning" of the controller). Q penalises [e1, e1_dot, e2,
- * e2_dot]; R penalises steering effort. e1 (cross-track) is weighted hard so the
- * car holds the line through the apex; modest e2 keeps the heading aligned. */
-#ifndef LQR_Q_E1
-#define LQR_Q_E1 10.0000f
-#endif
-#ifndef LQR_Q_E1D
-#define LQR_Q_E1D 1.0432f
-#endif
-#ifndef LQR_Q_E2
-#define LQR_Q_E2 9.7510f
-#endif
-#ifndef LQR_Q_E2D
-#define LQR_Q_E2D 0.4511f
-#endif
-#ifndef LQR_R
-#define LQR_R 2.8632f
-#endif
+/* The LQR cost weights (Q penalises [e1, e1_dot, e2, e2_dot]; R penalises
+ * steering effort) and the cross-track integrator gains are runtime tunables:
+ * they live as g_LQR_* globals in shared/tunables.c (defaults + TUNE_* env
+ * overrides) and are read directly in recompute_gain()/the steer law below. */
 
 /*
  * Build the discrete error-dynamics model (Ad, Bd) at speed vx. The input is the
@@ -255,8 +235,8 @@ static void recompute_gain(float vx)
     Vec Bd;
     build_model(vx, Ad, Bd);
 
-    Vec Q = { LQR_Q_E1, LQR_Q_E1D, LQR_Q_E2, LQR_Q_E2D };
-    lqr_gain(Ad, Bd, Q, LQR_R, cached_K);
+    Vec Q = { g_LQR_Q_E1, g_LQR_Q_E1D, g_LQR_Q_E2, g_LQR_Q_E2D };
+    lqr_gain(Ad, Bd, Q, g_LQR_R, cached_K);
     cached_vx = vx;
 }
 
@@ -293,14 +273,14 @@ float lqr_steer_command(float vx, float vy, float e1, float e2, float yaw_rate, 
      * wind it up, and clamp the contribution. */
     if (fabsf(e1) < 1.0f) {
         e1_integral += e1 * CONTROL_DT_S;
-        float i_lim = LQR_I_MAX / LQR_KI;
+        float i_lim = g_LQR_I_MAX / g_LQR_KI;
         if (e1_integral > i_lim) e1_integral = i_lim;
         if (e1_integral < -i_lim) e1_integral = -i_lim;
     }
     /* e1 = -cte, so +e1 (car left of line) needs steer to the right; the LQR
      * feedback already uses this sign via -K, so the integral follows it: the
      * correction is -LQR_KI * integral(e1). */
-    float delta_i = -LQR_KI * e1_integral;
+    float delta_i = -g_LQR_KI * e1_integral;
 
     return delta_fb + delta_ff + delta_i;
 }
