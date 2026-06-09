@@ -170,10 +170,10 @@ static float cached_vx = -1.0f;
 static float e1_integral = 0.0f;
 
 #ifndef LQR_KI
-#define LQR_KI       5.4654f /* integral gain on e1, reference-rad per (m*s)   */
+#define LQR_KI       2.5444f /* integral gain on e1, reference-rad per (m*s)   */
 #endif
 #ifndef LQR_I_MAX
-#define LQR_I_MAX    0.5629f /* clamp on the integral's steering contribution  */
+#define LQR_I_MAX    0.7178f /* clamp on the integral's steering contribution  */
 #endif
 
 /* Reset the integrator between independent runs / test cases. */
@@ -183,19 +183,19 @@ void lqr_steer_reset(void) { e1_integral = 0.0f; cached_vx = -1.0f; }
  * e2_dot]; R penalises steering effort. e1 (cross-track) is weighted hard so the
  * car holds the line through the apex; modest e2 keeps the heading aligned. */
 #ifndef LQR_Q_E1
-#define LQR_Q_E1   11.2975f
+#define LQR_Q_E1   10.0000f
 #endif
 #ifndef LQR_Q_E1D
-#define LQR_Q_E1D   1.4164f
+#define LQR_Q_E1D   3.0000f
 #endif
 #ifndef LQR_Q_E2
-#define LQR_Q_E2   14.2220f
+#define LQR_Q_E2    8.8178f
 #endif
 #ifndef LQR_Q_E2D
-#define LQR_Q_E2D   0.8434f
+#define LQR_Q_E2D   0.3601f
 #endif
 #ifndef LQR_R
-#define LQR_R       7.7125f
+#define LQR_R       8.0000f
 #endif
 
 /*

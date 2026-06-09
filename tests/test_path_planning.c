@@ -11,7 +11,7 @@
 #include <string.h>
 
 #include "../HIL_Firmware/include/path_planning.h"
-#include "../HIL_Firmware/include/track.h"
+#include "../HIL_Firmware/include/track_parser.h"
 
 /* ---- Minimal test framework ---- */
 

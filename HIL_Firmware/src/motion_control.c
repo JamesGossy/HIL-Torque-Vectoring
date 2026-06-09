@@ -58,8 +58,12 @@ static float wrap_pi(float a)
  */
 static float brake_decel_avail(float v, float kappa)
 {
+    /* Combined friction-circle budget grows with downforce (v^2), same as the
+     * lateral grip: a_lat^2 + a_lon^2 <= gg(v)^2. So at speed (where braking
+     * happens, before a corner) there is more total grip to brake with. */
+    float gg_acc = lateral_grip_accel(GG_ACCEL_MS2, v);
     float a_lat = v * v * kappa;
-    float gg    = GG_ACCEL_MS2 * GG_ACCEL_MS2;
+    float gg    = gg_acc * gg_acc;
     float a_lat2 = a_lat * a_lat;
     float a_lon = (a_lat2 < gg) ? sqrtf(gg - a_lat2) : 0.0f;
     if (a_lon > MAX_BRAKE_DECEL_MS2) a_lon = MAX_BRAKE_DECEL_MS2;
@@ -101,10 +105,18 @@ static float plan_target_speed(const VehicleState *state, const Track *track,
         }
         int cnext = (start_idx + i + 1) % count;
 
-        float v_curve = (kappa > 1e-4f)
-                        ? sqrtf(MAX_LATERAL_ACCEL_MS2 / kappa)
-                        : TARGET_SPEED_MS;
-        v_limit[n] = (v_curve < TARGET_SPEED_MS) ? v_curve : TARGET_SPEED_MS;
+        /* Apex speed under speed-dependent grip: the conservative base budget
+         * MAX_LATERAL_ACCEL_MS2 plus a FRACTION of the downforce bonus. Using the
+         * full downforce grip here leaves the tracker no margin (it then washes
+         * wide and saturates the steering recovering); PLANNER_DOWNFORCE_FRAC
+         * keeps the on-car plan conservative while still gaining most of the
+         * downforce in the faster corners. The LINE is shaped for the full grip;
+         * only what the car DRIVES is held back. */
+        float planner_base = MAX_LATERAL_ACCEL_MS2;
+        float full = apex_speed(planner_base, kappa, TARGET_SPEED_MS);
+        float flat = (kappa > 1e-4f) ? sqrtf(planner_base / kappa) : TARGET_SPEED_MS;
+        if (flat > TARGET_SPEED_MS) flat = TARGET_SPEED_MS;
+        v_limit[n] = flat + PLANNER_DOWNFORCE_FRAC * (full - flat);
         seg_k[n]   = kappa;
 
         float dx = track->points[cnext].x - track->points[ccur].x;
@@ -249,16 +261,31 @@ static float boundary_steer_correction(float x, float y, const Track *track)
 }
 
 
+/* ---- Controller memory ---- */
+
+/* Progress index along the line, independent of track->current_index (which can
+ * jump ahead when the car slides wide and skips a corner), and the throttle
+ * integrator. File-scope so motion_control_reset() can clear them between runs.
+ * s_path_idx = -1 means "uninitialised" - the first update seeds it. */
+static int   s_path_idx       = -1;
+static float s_speed_integral = 0.0f;   /* throttle integral state, Nm */
+
+/* Reset the driver's internal state and the LQR steering state it owns. Call
+ * before an independent run so no state leaks in from the previous one; the sim
+ * entry points do this after track_init(). */
+void motion_control_reset(void)
+{
+    s_path_idx       = -1;
+    s_speed_integral = 0.0f;
+    lqr_steer_reset();
+}
+
+
 /* ---- Public update ---- */
 
 float motion_control_update(VehicleState *state, const Track *track,
                             float *out_target_speed)
 {
-    /* Own progress index along the line, independent of track->current_index
-     * (which can jump ahead when the car slides wide and skip a corner). */
-    static int   s_path_idx       = -1;
-    static float s_speed_integral = 0.0f;   /* throttle integral state, Nm */
-
     int   count = track->count;
     float vx    = state->velocity;
 

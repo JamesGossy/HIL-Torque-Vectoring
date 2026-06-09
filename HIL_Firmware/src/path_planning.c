@@ -1,5 +1,6 @@
 #include "../include/path_planning.h"
 #include "parameters_config.h"   /* MAX_LATERAL_ACCEL_MS2 (self-consistent grip) */
+#include "vehicle_config.h"      /* apex_speed() / lateral_grip_accel() (downforce) */
 #include <math.h>
 
 /*
@@ -80,7 +81,7 @@ static void extract_gates(int n_left, int n_right)
  * clear cones by more than the off-track threshold plus its own cross-track
  * error. */
 #ifndef RACING_MARGIN
-#define RACING_MARGIN  0.2756f
+#define RACING_MARGIN  0.3400f
 #endif
 #define OPT_PASSES     400
 
@@ -224,7 +225,7 @@ static void compute_normals(void)
  * if you deliberately want to shape a more/less aggressive line than the car
  * drives; always confirm 0 off-track with `make eval`. */
 #ifndef PP_GRIP_ACCEL
-#define PP_GRIP_ACCEL     13.6871f
+#define PP_GRIP_ACCEL     12.6186f
 #endif
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
@@ -254,7 +255,7 @@ static void compute_normals(void)
  * lap_time() charges a steep penalty for any segment tighter than this floor, so
  * the optimiser never draws an un-holdable apex. */
 #ifndef PP_MIN_RADIUS_M
-#define PP_MIN_RADIUS_M   6.2565f
+#define PP_MIN_RADIUS_M   4.5000f
 #endif
 /* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
  * floor. Large enough to dominate any real time gain a too-tight apex could
@@ -314,9 +315,13 @@ static float lap_time(int n)
         float dy = rs_py(j) - rs_py(i);
         lt_ds[i] = sqrtf(dx*dx + dy*dy);
 
+        /* Apex speed under SPEED-DEPENDENT grip: downforce adds lateral grip with
+         * v^2, so the fast corners hold more than the flat PP_GRIP_ACCEL alone.
+         * apex_speed() solves v^2*k = PP_GRIP_ACCEL + AERO_GRIP_COEF*v^2 in closed
+         * form. Shaping the line for the real (downforce-aware) grip is the point
+         * of the optimiser - a gripless line gives away the fast corners. */
         float k = line_curvature(i, n);
-        float vcap = (k > 1e-4f) ? sqrtf(PP_GRIP_ACCEL / k) : PP_V_MAX;
-        lt_v[i] = (vcap < PP_V_MAX) ? vcap : PP_V_MAX;
+        lt_v[i] = apex_speed(PP_GRIP_ACCEL, k, PP_V_MAX);
     }
 
     /* Forward (traction-out) and backward (braking) passes. Two laps of each

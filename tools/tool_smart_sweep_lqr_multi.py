@@ -1,46 +1,44 @@
 #!/usr/bin/env python3
 """
-tools/tool_smart_sweep_lqr.py - adaptive, robustness-aware parameter optimiser for
-the (LQR) steering + speed-planner + TV tuning.
+tools/tool_smart_sweep_lqr_multi.py - multi-track variant of
+tool_smart_sweep_lqr.py.
 
-An adaptive random-explore -> converge search that links lqr_steer.c and sweeps
-the high-leverage parameter set: the path-planner / speed knobs the tight tracker
-needs (RACING_MARGIN, PP_MIN_RADIUS_M, PP_GRIP_ACCEL, MAX_LATERAL_ACCEL_MS2,
-GG_ACCEL_MS2), the LQR cost weights (Q/R, KI, I_MAX), and the throttle / TV
-gains. The tuned values it produces are committed as the in-source #ifndef
-defaults, so a plain `make eval` reproduces the result with no -D overrides.
+Identical adaptive random->converge search and robust (worst-of-N perturbed
+neighbour) scoring, but every candidate is evaluated on EACH track in TRACKS and
+scored by its WORST track. The result is therefore a single shared gain set that
+keeps BOTH tracks clean (0 off-track, completed lap, robust to +/-3% jitter) and
+minimises the slower of the two lap times - the min-max objective.
 
-Robust scoring is ON by default (--robust 3): each candidate is judged by its
-WORST of N perturbed neighbours, so the optimiser avoids knife-edge configs that
-are clean only at the exact point (see the Pure-Pursuit finding in the repo
-history - the fastest "clean" PP lap failed 20/20 perturbation jitters).
+The tracks are selected via the TRACK environment variable, which
+track_parser.c reads in track_init(); the eval binary needs no other change.
 
 Usage (repo root, MinGW gcc on PATH, TMPDIR set to a writable temp):
-    python tools/tool_smart_sweep_lqr.py --trials 150 --robust 3
+    python tools/tool_smart_sweep_lqr_multi.py --trials 150 --robust 3
 """
 import argparse, json, os, random, subprocess, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, "HIL_Firmware", "build")
-OUT = os.path.join(BUILD, "eval_smartlqr.exe")
+OUT = os.path.join(BUILD, "eval_smartlqr_multi.exe")
 
 SRCS = ["tools/tool_eval_lap.c", "HIL_Firmware/src/motion_control.c",
         "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track_parser.c",
         "HIL_Firmware/src/path_planning.c", "HIL_Firmware/src/lqr_steer.c",
         "ECU_Firmware/src/torque_vectoring.c"]
 INC = ["-I", "HIL_Firmware/include", "-I", "shared", "-I", "ECU_Firmware/include"]
-EXTRA_DEFS = []   # LQR steering is unconditional; no enabling define needed
+EXTRA_DEFS = []
 
-# (name, low, high). Bounds bracket the recommended companion settings.
+# Tracks to co-optimise. Names must match the tracks/*.yaml layout names.
+TRACKS = ["fsg2024", "fse2024"]
+
+# (name, low, high). Same high-leverage set as the single-track sweeper.
 PARAMS = [
-    # path planner / speed (the line the tight tracker needs)
     ("MAX_LATERAL_ACCEL_MS2", 10.0, 14.5),
     ("PP_GRIP_ACCEL",         10.0, 14.5),
     ("RACING_MARGIN",          0.18, 0.34),
     ("PP_MIN_RADIUS_M",        4.5,  6.5),
     ("GG_ACCEL_MS2",           6.0,  10.0),
     ("PLANNER_DOWNFORCE_FRAC", 0.0,  0.6),
-    # LQR cost weights (the controller's own tuning)
     ("LQR_Q_E1",              10.0, 40.0),
     ("LQR_Q_E1D",              0.3,  3.0),
     ("LQR_Q_E2",               3.0, 16.0),
@@ -48,7 +46,6 @@ PARAMS = [
     ("LQR_R",                  2.0,  8.0),
     ("LQR_KI",                 2.0, 10.0),
     ("LQR_I_MAX",              0.3,  1.0),
-    # throttle / TV
     ("LAT_GRIP_REF_MS2",      11.0, 16.0),
     ("KP_YAW_DEFAULT",        40.0, 90.0),
     ("TV_KFF",                 6.0, 18.0),
@@ -58,11 +55,7 @@ NAMES = [p[0] for p in PARAMS]
 LO = {p[0]: p[1] for p in PARAMS}
 HI = {p[0]: p[2] for p in PARAMS}
 
-# Starting incumbent: the committed in-source defaults. These are now the SHARED
-# config that laps both fsg2024 and fse2024 cleanly (see tool_smart_sweep_lqr_multi.py),
-# so on fsg2024 alone this single-track sweep can usually improve on them. Keep
-# in sync with the #ifndef defaults in parameters_config.h / lqr_steer.c /
-# path_planning.c so a re-run starts from the shipped config.
+# Starting incumbent: the committed in-source defaults (clean on fsg2024).
 DEFAULTS = {
     "MAX_LATERAL_ACCEL_MS2": 10.9412, "PP_GRIP_ACCEL": 12.6186,
     "RACING_MARGIN": 0.3400, "PP_MIN_RADIUS_M": 4.5000, "GG_ACCEL_MS2": 6.7782,
@@ -87,8 +80,10 @@ def build(cfg):
     return r.returncode == 0, r.stderr
 
 
-def run():
-    r = subprocess.run([OUT], cwd=ROOT, capture_output=True, text=True)
+def run_track(track):
+    env = dict(os.environ)
+    env["TRACK"] = track
+    r = subprocess.run([OUT], cwd=ROOT, capture_output=True, text=True, env=env)
     for line in r.stdout.splitlines():
         if line.startswith("RESULT"):
             d = {}
@@ -99,7 +94,8 @@ def run():
     return None
 
 
-def score(res):
+def track_score(res):
+    """Per-track score: lap time if clean, else a large penalty."""
     if res is None:
         return 1e9
     off = res.get("offtrack", 9999)
@@ -114,28 +110,44 @@ def score(res):
 
 
 def evaluate(cfg):
-    ok, err = build(cfg)
-    return (run(), "") if ok else (None, err)
+    """Build once, run every track. Returns ({track: res}, combined_score).
+    Combined score is the WORST (max) per-track score - the min-max objective."""
+    ok, _ = build(cfg)
+    if not ok:
+        return None, 1e9
+    results, worst = {}, 0.0
+    for t in TRACKS:
+        res = run_track(t)
+        results[t] = res
+        worst = max(worst, track_score(res))
+    return results, worst
 
 
 def robust_evaluate(cfg, rng):
-    res, _ = evaluate(cfg)
-    if res is None:
+    results, base = evaluate(cfg)
+    if results is None:
         return None, 1e9
-    worst = score(res)
+    worst = base
     for _ in range(ROBUST_N):
         c = {n: clamp(n, cfg[n] * (1 + rng.uniform(-ROBUST_PCT, ROBUST_PCT)))
              for n in NAMES}
-        worst = max(worst, score(evaluate(c)[0]))
-    return res, worst
+        worst = max(worst, evaluate(c)[1])
+    return results, worst
 
 
-def resstr(res):
-    if res is None:
+def resstr(results):
+    if results is None:
         return "(build/run failed)"
-    return ("lap_s=%s off=%s laps=%s meanCTE=%.3f worstCTE=%.3f"
-            % (res.get("lap_s"), res.get("offtrack"), res.get("laps"),
-               res.get("mean_cte", -1), res.get("worst_cte", -1)))
+    parts = []
+    for t in TRACKS:
+        r = results.get(t)
+        if r is None:
+            parts.append("%s:(fail)" % t)
+        else:
+            parts.append("%s:lap=%s off=%s laps=%s wCTE=%.2f"
+                         % (t, r.get("lap_s"), r.get("offtrack"),
+                            r.get("laps"), r.get("worst_cte", -1)))
+    return "  ".join(parts)
 
 
 def main():
@@ -156,8 +168,7 @@ def main():
     if ROBUST_N > 0:
         inc_res, inc_score = robust_evaluate(inc_cfg, rng)
     else:
-        inc_res = evaluate(inc_cfg)[0]
-        inc_score = score(inc_res)
+        inc_res, inc_score = evaluate(inc_cfg)
     print("baseline  score=%.3f  %s" % (inc_score, resstr(inc_res)), flush=True)
 
     n_rand = int(args.trials * args.frac_random)
@@ -174,8 +185,7 @@ def main():
         if ROBUST_N > 0:
             res, s = robust_evaluate(cfg, rng)
         else:
-            res, _ = evaluate(cfg)
-            s = score(res)
+            res, s = evaluate(cfg)
         flag = ""
         if s < inc_score - 1e-6:
             inc_score, inc_cfg, inc_res = s, dict(cfg), res
@@ -184,17 +194,17 @@ def main():
               % (i+1, args.trials, kind, s, resstr(res), flag), flush=True)
 
     dt = time.time() - t0
-    print("\n==================== BEST (LQR) ====================")
-    print("worst-neighbour score = %.3f" % inc_score)
+    print("\n================ BEST (shared, both tracks) ================")
+    print("worst-track worst-neighbour score = %.3f" % inc_score)
     print(resstr(inc_res))
     print(" ".join("%s=%.3f" % (n, inc_cfg[n]) for n in NAMES))
     print("\n-D flags:")
     print(" ".join("-D%s=%.4ff" % (n, inc_cfg[n]) for n in NAMES))
-    with open(os.path.join(BUILD, "best_lqr.json"), "w") as f:
+    with open(os.path.join(BUILD, "best_lqr_multi.json"), "w") as f:
         json.dump(inc_cfg, f, indent=1)
     print("\n(%d trials in %.1fs, %.2fs/trial)  -> %s"
           % (args.trials, dt, dt/max(1, args.trials),
-             os.path.join("HIL_Firmware/build", "best_lqr.json")))
+             os.path.join("HIL_Firmware/build", "best_lqr_multi.json")))
 
 
 if __name__ == "__main__":

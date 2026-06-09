@@ -63,7 +63,7 @@ HIL-Torque-Vectoring/
 |-- HIL_Firmware/             The simulation host. Pretends to be the real car.
 |   |-- src/main.c            The sim loop. Streams STATE lines to stdout.
 |   |-- src/vehicle_model.c   The car physics (per-wheel dynamic bicycle model).
-|   |-- src/track.c           The FSG 2024 cone track (measured cone positions).
+|   |-- src/track_parser.c    Loads a cone layout (tracks/*.yaml) and selects by TRACK.
 |   |-- src/path_planning.c   Builds the racing-line waypoints from the cones.
 |   |-- src/motion_control.c  The virtual driver: LQR steering + speed planner.
 |   `-- src/lqr_steer.c       The model-based LQR steering law.
@@ -71,8 +71,9 @@ HIL-Torque-Vectoring/
 |-- ECU_Firmware/             The ECU side. Only sees sensor data.
 |   `-- src/torque_vectoring.c  The TV algorithm: splits torque four ways.
 |
+|-- tracks/                   Cone layouts as YAML (fsg2024, fse2024). Source of truth.
 |-- tests/                    Unit tests (make test).
-|-- tools/                    Diagnostics (tool_*): tool_eval_lap, tool_perf_sim, tool_smart_sweep_lqr, CI helpers.
+|-- tools/                    Diagnostics (tool_*): tool_eval_lap, tool_perf_sim, tool_smart_sweep_lqr, gen_tracks, CI helpers.
 `-- ECU_Hardware/             Placeholder for PCB and wiring docs.
 ```
 
@@ -270,8 +271,12 @@ in `HIL_Firmware/src/lqr_steer.c`. The speed budget, the racing line, and the
 steering gains interact, so re-tune them together (`tools/tool_smart_sweep_lqr.py`)
 and validate with `make eval`.
 
-**Change the track.** Edit the cone positions in `HIL_Firmware/src/track.c`.
-`path_plan()` rebuilds the racing line automatically.
+**Change or add a track.** The cone layouts live in `tracks/*.yaml` (the source
+of truth). Edit one, or drop in a new `tracks/<name>.yaml`, then rebuild —
+`tools/gen_tracks.py` regenerates the cone data and `path_plan()` rebuilds the
+racing line automatically. Pick a layout at runtime with the `TRACK` environment
+variable (default `fsg2024`), e.g. `TRACK=fse2024 make eval` or
+`TRACK=fse2024 python visualiser.py`.
 
 
 ## What is not modelled

@@ -13,7 +13,7 @@
 #endif
 
 #include "../include/vehicle_model.h"
-#include "../include/track.h"
+#include "../include/track_parser.h"
 #include "../include/motion_control.h"
 #include "../../shared/tv_interface.h"
 #include "../../ECU_Firmware/include/torque_vectoring.h"
@@ -161,6 +161,12 @@ int main(void)
     float init_dy = track.points[1].y - track.points[0].y;
     float init_heading = atan2f(init_dy, init_dx);
     vehicle_model_init(&state, track.points[0].x, track.points[0].y, init_heading);
+
+    /* Start every controller from a clean slate (driver progress + throttle
+     * integrator + LQR steering state, and the ECU's yaw PID), so no state
+     * leaks in from a stale static into this run. */
+    motion_control_reset();
+    torque_vectoring_reset();
 
     /* --- Print track data so the visualiser can draw the track and cones --- */
     printf("TRACK %d\n", track.count);
