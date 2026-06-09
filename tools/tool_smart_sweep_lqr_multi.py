@@ -24,9 +24,8 @@ OUT = os.path.join(BUILD, "eval_smartlqr_multi.exe")
 SRCS = ["tools/tool_eval_lap.c", "HIL_Firmware/src/motion_control.c",
         "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track_parser.c",
         "HIL_Firmware/src/path_planning.c", "HIL_Firmware/src/lqr_steer.c",
-        "ECU_Firmware/src/torque_vectoring.c"]
+        "ECU_Firmware/src/torque_vectoring.c", "shared/tunables.c"]
 INC = ["-I", "HIL_Firmware/include", "-I", "shared", "-I", "ECU_Firmware/include"]
-EXTRA_DEFS = []
 
 # Tracks to co-optimise. Names must match the tracks/*.yaml layout names.
 TRACKS = ["fsg2024", "fse2024"]
@@ -54,7 +53,8 @@ PARAMS = [
     ("LAT_GRIP_REF_MS2",      11.0, 20.0),
     ("KP_YAW_DEFAULT",        40.0, 90.0),
     ("TV_KFF",                 6.0, 18.0),
-    ("TV_REAR_SHARE",          0.45, 0.70),
+    # TV_REAR_SHARE removed: the grip-aware bleed distributor allocates
+    # front/rear by grip ceiling, so the old fixed rear-share gain is now dead.
 ]
 NAMES = [p[0] for p in PARAMS]
 LO = {p[0]: p[1] for p in PARAMS}
@@ -70,7 +70,6 @@ DEFAULTS = {
     "LQR_Q_E1": 10.0000, "LQR_Q_E1D": 1.0432, "LQR_Q_E2": 9.7510,
     "LQR_Q_E2D": 0.4511, "LQR_R": 2.8632, "LQR_KI": 7.9193, "LQR_I_MAX": 0.3000,
     "LAT_GRIP_REF_MS2": 16.5044, "KP_YAW_DEFAULT": 86.2440, "TV_KFF": 10.3635,
-    "TV_REAR_SHARE": 0.4894,
 }
 
 ROBUST_PCT = 0.03
@@ -80,15 +79,26 @@ ROBUST_N = 3
 def clamp(n, v): return max(LO[n], min(HI[n], v))
 
 
-def build(cfg):
-    defs = EXTRA_DEFS + ["-D%s=%.5ff" % (n, cfg[n]) for n in NAMES]
-    r = subprocess.run(["gcc", "-std=c11", "-O2", *INC, *defs, "-o", OUT,
-                        *SRCS, "-lm"], cwd=ROOT, capture_output=True, text=True)
+def build_once():
+    """Compile the eval binary a SINGLE time. The gains are applied at runtime via
+    TUNE_* env vars (shared/tunables.c), so we never recompile per candidate -
+    that turned ~86% of the old sweep's wall-time (a full gcc rebuild per
+    candidate) into nothing. The binary reads the env each run."""
+    r = subprocess.run(["gcc", "-std=c11", "-O2", *INC, "-o", OUT, *SRCS, "-lm"],
+                       cwd=ROOT, capture_output=True, text=True)
     return r.returncode == 0, r.stderr
 
 
-def run_track(track):
+def cfg_env(cfg):
+    """Environment carrying this candidate's gains as TUNE_* overrides."""
     env = dict(os.environ)
+    for n in NAMES:
+        env["TUNE_%s" % n] = "%.6f" % cfg[n]
+    return env
+
+
+def run_track(track, env):
+    env = dict(env)
     env["TRACK"] = track
     r = subprocess.run([OUT], cwd=ROOT, capture_output=True, text=True, env=env)
     for line in r.stdout.splitlines():
@@ -117,14 +127,13 @@ def track_score(res):
 
 
 def evaluate(cfg):
-    """Build once, run every track. Returns ({track: res}, combined_score).
-    Combined score is the WORST (max) per-track score - the min-max objective."""
-    ok, _ = build(cfg)
-    if not ok:
-        return None, 1e9
+    """Run every track with this candidate's gains applied via env (no rebuild).
+    Returns ({track: res}, combined_score). Combined score is the WORST (max)
+    per-track score - the min-max objective."""
+    env = cfg_env(cfg)
     results, worst = {}, 0.0
     for t in TRACKS:
-        res = run_track(t)
+        res = run_track(t, env)
         results[t] = res
         worst = max(worst, track_score(res))
     return results, worst
@@ -169,6 +178,13 @@ def main():
     random.seed(args.seed)
     rng = random.Random(args.seed + 999)
     os.makedirs(BUILD, exist_ok=True)
+
+    # Compile the eval binary ONCE; every candidate is then just a run with TUNE_*
+    # env overrides (shared/tunables.c), not a recompile.
+    ok, err = build_once()
+    if not ok:
+        print("BUILD FAILED:\n" + err)
+        return
 
     t0 = time.time()
     inc_cfg = dict(DEFAULTS)

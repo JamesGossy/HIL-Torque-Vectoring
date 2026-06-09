@@ -1,6 +1,7 @@
 #include "../include/path_planning.h"
-#include "parameters_config.h" /* MAX_LATERAL_ACCEL_MS2 (self-consistent grip) */
-#include "vehicle_config.h"    /* apex_speed() / lateral_grip_accel() (downforce) */
+#include "constants_config.h" /* fixed planner constants (PP_V_MAX, etc.) */
+#include "vehicle_config.h"   /* apex_speed() / lateral_grip_accel() (downforce) */
+#include "tunables.h"         /* runtime-overridable racing-line gains */
 #include <math.h>
 
 /*
@@ -78,15 +79,13 @@ static void extract_gates(int n_left, int n_right)
 
 #define RESAMPLE_SPACING_M 2.5f /* target waypoint spacing, metres        */
 
-/* RACING_MARGIN keeps the line this fraction of the half-width off each
+/* g_RACING_MARGIN keeps the line this fraction of the half-width off each
  * boundary. Keep it modest so tight apexes are not over-constrained, but it must
  * leave enough clearance that the tracker - which now follows the line closely -
  * does not ride the apex cones: a faithful tracker needs the line itself to
  * clear cones by more than the off-track threshold plus its own cross-track
- * error. */
-#ifndef RACING_MARGIN
-#define RACING_MARGIN 0.2587f
-#endif
+ * error. It is a runtime tunable (g_RACING_MARGIN, with g_PP_GRIP_ACCEL and
+ * g_PP_MIN_RADIUS_M) defined in shared/tunables.c. */
 #define OPT_PASSES 400
 
 /* Centreline (one entry per gate, in order) */
@@ -234,10 +233,8 @@ static void compute_normals(void)
  * into an un-steerable apex. The PP_MIN_RADIUS_M feasibility floor below now
  * prevents that directly, so the grip can be self-consistent.) Override it only
  * if you deliberately want to shape a more/less aggressive line than the car
- * drives; always confirm 0 off-track with `make eval`. */
-#ifndef PP_GRIP_ACCEL
-#define PP_GRIP_ACCEL 10.0000f
-#endif
+ * drives; always confirm 0 off-track with `make eval`. Runtime tunable:
+ * g_PP_GRIP_ACCEL in shared/tunables.c. */
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
 #define PP_ACCEL_LON 6.0f
@@ -264,10 +261,8 @@ static void compute_normals(void)
  * The quasi-steady-state speed model does NOT know any of this on its own: it
  * reads a tight radius as a low corner speed and happily spikes the curvature.
  * lap_time() charges a steep penalty for any segment tighter than this floor, so
- * the optimiser never draws an un-holdable apex. */
-#ifndef PP_MIN_RADIUS_M
-#define PP_MIN_RADIUS_M 6.0329f
-#endif
+ * the optimiser never draws an un-holdable apex. Runtime tunable:
+ * g_PP_MIN_RADIUS_M in shared/tunables.c. */
 /* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
  * floor. Large enough to dominate any real time gain a too-tight apex could
  * offer, so an infeasible radius is always rejected. */
@@ -322,7 +317,7 @@ static float lt_k[MAX_WAYPOINTS];  /* line curvature at point i, 1/m   */
  * corners brake/accelerate harder on their downforce, the whole point of #1. */
 static float lon_accel_avail(float v, float k, float a_cap)
 {
-    float gg     = lateral_grip_accel(GG_ACCEL_MS2, v);
+    float gg     = lateral_grip_accel(g_GG_ACCEL_MS2, v);
     float a_lat  = v * v * k;
     float budget = gg * gg - a_lat * a_lat;
     float a_lon  = (budget > 0.0f) ? sqrtf(budget) : 0.0f;
@@ -367,7 +362,7 @@ static float lap_time(int n)
          * of the optimiser - a gripless line gives away the fast corners. */
         float k = line_curvature(i, n);
         lt_k[i] = k;
-        lt_v[i] = apex_speed(PP_GRIP_ACCEL, k, PP_V_MAX);
+        lt_v[i] = apex_speed(g_PP_GRIP_ACCEL, k, PP_V_MAX);
     }
 
     /* Forward (traction-out) and backward (braking) passes under the friction
@@ -408,9 +403,9 @@ static float lap_time(int n)
         t += lt_ds[i] / vavg;
 
         float k       = lt_k[i];
-        float r_hold  = PP_MIN_RADIUS_M; /* slow-corner (no downforce) floor */
-        float a_dyn   = lateral_grip_accel(PP_GRIP_ACCEL, lt_v[i]);
-        float r_speed = (a_dyn > 1e-3f) ? lt_v[i] * lt_v[i] / a_dyn : PP_MIN_RADIUS_M;
+        float r_hold  = g_PP_MIN_RADIUS_M; /* slow-corner (no downforce) floor */
+        float a_dyn   = lateral_grip_accel(g_PP_GRIP_ACCEL, lt_v[i]);
+        float r_speed = (a_dyn > 1e-3f) ? lt_v[i] * lt_v[i] / a_dyn : g_PP_MIN_RADIUS_M;
         if (r_speed < r_hold) r_hold = r_speed; /* tighter allowed where downforce holds it */
         float k_floor = 1.0f / r_hold;
         if (k > k_floor) t += PP_CURV_PENALTY * (k - k_floor);
@@ -440,7 +435,7 @@ static void seed_min_curvature(int n)
             float Sy
                 = rs_py(im2) - 4.0f * rs_py(im1) + 6.0f * rs_y[i] - 4.0f * rs_py(ip1) + rs_py(ip2);
             float o   = -(rs_nx[i] * Sx + rs_ny[i] * Sy) / 6.0f;
-            float lim = (1.0f - 2.0f * RACING_MARGIN) * rs_h[i];
+            float lim = (1.0f - 2.0f * g_RACING_MARGIN) * rs_h[i];
             if (o > lim) o = lim;
             if (o < -lim) o = -lim;
             rs_off[i] = o;
@@ -470,7 +465,7 @@ static void optimize_racing_line(void)
     for (pass = 0; pass < CD_PASSES && delta >= CD_DELTA_MIN; pass++) {
         int improved = 0;
         for (i = 0; i < n; i++) {
-            float lim = (1.0f - 2.0f * RACING_MARGIN) * rs_h[i];
+            float lim = (1.0f - 2.0f * g_RACING_MARGIN) * rs_h[i];
             float o0  = rs_off[i];
 
             /* try + then - */

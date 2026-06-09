@@ -73,7 +73,7 @@ CLANG_FORMAT ?= $(shell command -v clang-format 2>/dev/null \
     || echo clang-format)
 FORMAT_SRCS   = $(wildcard HIL_Firmware/src/*.c HIL_Firmware/include/*.h \
                            ECU_Firmware/src/*.c ECU_Firmware/include/*.h \
-                           shared/*.h tests/*.c tools/*.c)
+                           shared/*.c shared/*.h tests/*.c tools/*.c)
 FORMAT_SRCS  := $(filter-out HIL_Firmware/include/track_data.h, $(FORMAT_SRCS))
 
 # Steering is the model-based LQR law (HIL_Firmware/src/lqr_steer.c); the tuned
@@ -85,7 +85,8 @@ HIL_SRCS = HIL_Firmware/src/main.c \
            HIL_Firmware/src/path_planning.c \
            HIL_Firmware/src/motion_control.c \
            HIL_Firmware/src/lqr_steer.c \
-           ECU_Firmware/src/torque_vectoring.c
+           ECU_Firmware/src/torque_vectoring.c \
+           shared/tunables.c
 
 HIL_OBJS = $(patsubst %.c, $(HIL_BUILD)/%.o, $(notdir $(HIL_SRCS)))
 
@@ -93,19 +94,23 @@ VM_SRCS = tests/test_vehicle_model.c \
           HIL_Firmware/src/vehicle_model.c
 
 PP_SRCS = tests/test_path_planning.c \
-          HIL_Firmware/src/path_planning.c
+          HIL_Firmware/src/path_planning.c \
+          shared/tunables.c
 
 MC_SRCS = tests/test_motion_control.c \
           HIL_Firmware/src/motion_control.c \
           HIL_Firmware/src/vehicle_model.c \
           HIL_Firmware/src/path_planning.c \
-          HIL_Firmware/src/lqr_steer.c
+          HIL_Firmware/src/lqr_steer.c \
+          shared/tunables.c
 
 LQR_SRCS = tests/test_lqr.c \
-           HIL_Firmware/src/lqr_steer.c
+           HIL_Firmware/src/lqr_steer.c \
+           shared/tunables.c
 
 TV_SRCS = tests/test_tv.c \
-          ECU_Firmware/src/torque_vectoring.c
+          ECU_Firmware/src/torque_vectoring.c \
+          shared/tunables.c
 
 # Integration test: the full driver -> ECU -> vehicle -> track loop, so it pulls
 # in every module the sim wires together.
@@ -115,7 +120,8 @@ INT_SRCS = tests/test_integration.c \
            HIL_Firmware/src/track_parser.c \
            HIL_Firmware/src/path_planning.c \
            HIL_Firmware/src/lqr_steer.c \
-           ECU_Firmware/src/torque_vectoring.c
+           ECU_Firmware/src/torque_vectoring.c \
+           shared/tunables.c
 
 EVAL     = $(HIL_BUILD)/eval_lap$(EXE_EXT)
 EVAL_SRCS = tools/tool_eval_lap.c \
@@ -124,7 +130,8 @@ EVAL_SRCS = tools/tool_eval_lap.c \
             HIL_Firmware/src/track_parser.c \
             HIL_Firmware/src/path_planning.c \
             HIL_Firmware/src/lqr_steer.c \
-            ECU_Firmware/src/torque_vectoring.c
+            ECU_Firmware/src/torque_vectoring.c \
+            shared/tunables.c
 
 PERF      = $(HIL_BUILD)/perf_sim$(EXE_EXT)
 PERF_SRCS = tools/tool_perf_sim.c \
@@ -133,7 +140,8 @@ PERF_SRCS = tools/tool_perf_sim.c \
             HIL_Firmware/src/track_parser.c \
             HIL_Firmware/src/path_planning.c \
             HIL_Firmware/src/lqr_steer.c \
-            ECU_Firmware/src/torque_vectoring.c
+            ECU_Firmware/src/torque_vectoring.c \
+            shared/tunables.c
 
 .PHONY: all run eval test perf clean format format-check
 
@@ -147,6 +155,11 @@ $(HIL_BUILD)/%.o: HIL_Firmware/src/%.c $(TRACK_DATA) | $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -c -o $@ $<
 
 $(HIL_BUILD)/torque_vectoring.o: ECU_Firmware/src/torque_vectoring.c | $(HIL_BUILD)
+	$(CC) $(HIL_FLAGS) -c -o $@ $<
+
+# Shared runtime tunables (g_* gains, env overrides). Lives in shared/, linked by
+# the sim and every full-app build.
+$(HIL_BUILD)/tunables.o: shared/tunables.c | $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -c -o $@ $<
 
 $(HIL_SIM): $(HIL_OBJS)

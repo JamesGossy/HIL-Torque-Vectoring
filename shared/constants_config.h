@@ -1,16 +1,19 @@
-#ifndef PARAMETERS_CONFIG_H
-#define PARAMETERS_CONFIG_H
+#ifndef CONSTANTS_CONFIG_H
+#define CONSTANTS_CONFIG_H
 
 /*
- * shared/parameters_config.h
+ * shared/constants_config.h
  *
- * Every tunable parameter in the project, in one place. These are the values
- * you change to tune behaviour. The car's physical constants (mass, geometry,
- * tyre coefficients) live separately in shared/vehicle_config.h, because those
- * describe the hardware, not a tuning choice.
+ * Fixed configuration constants: actuator limits, control-loop timing, fixed
+ * controller coefficients, and safety thresholds that are NOT swept. These are
+ * compile-time #defines used across the driver and the ECU.
  *
- * Both the HIL driver and the ECU include this file. Gains that the sweep tool
- * overrides at compile time (-Dname=value) are wrapped in #ifndef.
+ * The gains the parameter sweep optimises (corner-speed budget, GG budget,
+ * downforce fraction, LQR cost weights, racing-line shape, the TV yaw gains)
+ * are NOT here - they are runtime tunables (g_* globals) in shared/tunables.c,
+ * overridable per run via TUNE_* env vars without a recompile. This header holds
+ * only what stays fixed. The car's physical constants (mass, geometry, tyre
+ * coefficients) live separately again, in shared/vehicle_config.h.
  */
 
 
@@ -55,19 +58,13 @@
 #define TARGET_SPEED_MS 30.0f
 #endif
 
-/* Corner-speed budget: v_corner = sqrt(a_lat / kappa). The tyres can hold
- * ~13 m/s^2; this is the dominant lap-time lever on this corner-heavy track.
- *
- * 13.72 is the value from the robustness-aware sweep (tools/smart_sweep_lqr.py).
- * The LQR tracker holds the line tightly enough to carry nearly the full grip
- * budget, where the old geometric tracker clipped apex cones above ~5. It is
- * coupled with the racing line (PP_GRIP_ACCEL, shaped for the same budget) and
- * the hairpin radius floor (PP_MIN_RADIUS_M, which must open as the budget
- * rises, or the car saturates the steering and stalls at the hairpin). Re-tune
- * them together and always confirm 0 off-track with `make eval`. */
-#ifndef MAX_LATERAL_ACCEL_MS2
-#define MAX_LATERAL_ACCEL_MS2 12.6154f
-#endif
+/* Corner-speed budget (g_MAX_LATERAL_ACCEL_MS2, a runtime tunable in
+ * shared/tunables.c): v_corner = sqrt(a_lat / kappa). This is the dominant
+ * lap-time lever on this corner-heavy track. It is coupled with the racing line
+ * (g_PP_GRIP_ACCEL, shaped for the same budget) and the hairpin radius floor
+ * (g_PP_MIN_RADIUS_M, which must open as the budget rises, or the car saturates
+ * the steering and stalls at the hairpin). Re-tune them together with
+ * tools/tool_smart_sweep_lqr_multi.py and confirm 0 off-track with `make eval`. */
 
 #define MAX_BRAKE_DECEL_MS2 5.6f /* max straight-line braking decel, m/s^2 */
 
@@ -87,11 +84,8 @@
  * apex cross-track error down (the car brakes earlier for the hairpins and stops
  * washing the front wide) for little lap time, because it slows the hairpins and
  * leaves the fast corners alone. Raising it makes the circle never bind (more
- * apex drift); lowering it brakes ever earlier (smoother but slower). Confirm 0
- * off-track with `make eval` after changing it. */
-#ifndef GG_ACCEL_MS2
-#define GG_ACCEL_MS2 8.7898f
-#endif
+ * apex drift); lowering it brakes ever earlier (smoother but slower). Runtime
+ * tunable: g_GG_ACCEL_MS2 in shared/tunables.c. */
 
 #define SPEED_PLAN_HORIZON_M 80.0f /* how far ahead to scan for corners, m */
 #define SPEED_PLAN_STEPS     40    /* max waypoints in the scan */
@@ -100,11 +94,8 @@
  * to use for corner-entry speed. The racing LINE is shaped for the full
  * downforce grip; the planner stays more conservative so the tracker keeps a
  * margin and does not wash wide and saturate the steering. 0 = old flat budget
- * (no downforce on the car); 1 = full downforce (no margin). Tune with the line
- * and the LQR weights via tools/tool_smart_sweep_lqr.py. */
-#ifndef PLANNER_DOWNFORCE_FRAC
-#define PLANNER_DOWNFORCE_FRAC 0.5586f
-#endif
+ * (no downforce on the car); 1 = full downforce (no margin). Runtime tunable:
+ * g_PLANNER_DOWNFORCE_FRAC in shared/tunables.c. */
 
 
 /* ============================================================ */
@@ -129,10 +120,8 @@
  * budget while staying clean: the corner-exit throttle cut was over-conservative
  * for how much grip the car actually has, leaving exit acceleration on the table
  * on a track that is ~80% corners. Lowering it powers out more weakly (slower
- * exits); raising it powers wide off the line (off-track). */
-#ifndef LAT_GRIP_REF_MS2
-#define LAT_GRIP_REF_MS2 16.5044f
-#endif
+ * exits); raising it powers wide off the line (off-track). Runtime tunable:
+ * g_LAT_GRIP_REF_MS2 in shared/tunables.c. */
 
 /* Throttle integral, to trim the steady-state speed deficit on corner exit.
  * Kept small (P does the heavy lifting) and anti-wound: it only advances when
@@ -159,12 +148,9 @@
 /* ECU: torque vectoring                                        */
 /* ============================================================ */
 
-/* Master proportional gain, Nm of torque bias per rad/s of yaw error. Tunable
- * at runtime with [ and ]. Ki and Kd are fractions of it, so the loop scales
- * together when you change this. */
-#ifndef KP_YAW_DEFAULT
-#define KP_YAW_DEFAULT 86.2440f
-#endif
+/* Master proportional gain, Nm of torque bias per rad/s of yaw error (the
+ * runtime tunable g_KP_YAW_DEFAULT in shared/tunables.c, also nudged live with
+ * [ and ]). Ki and Kd are fractions of it, so the loop scales together. */
 
 /* Integral and derivative gains, as a fraction of the master gain. I erases the
  * steady-state understeer; D damps the turn-in. */
@@ -177,10 +163,7 @@
 
 /* Feedforward gain: bias per unit of (desired_yaw_rate * speed). Pre-loads the
  * differential from the cornering demand so the yaw moment is there before any
- * error develops. */
-#ifndef TV_KFF
-#define TV_KFF 10.3635f
-#endif
+ * error develops. Runtime tunable: g_TV_KFF in shared/tunables.c. */
 
 /* Cap on the bias the integral term alone can contribute, Nm. */
 #define TV_I_MAX_NM 12.0f
@@ -198,12 +181,6 @@
 /* Speed at which the gain scaling is neutral. Effective gain = Kp * (this / v),
  * so the yaw response stays consistent across the speed range. */
 #define TV_SPEED_REF_MS 12.0f
-
-/* Front/rear split of the yaw-moment differential. 0.5 gives an even split;
- * the sweep settled near 0.46 (a slight front bias) for this car/line. */
-#ifndef TV_REAR_SHARE
-#define TV_REAR_SHARE 0.4894f
-#endif
 
 /* Weight on the wheel-speed yaw estimate when fused with the IMU. 0 = IMU only,
  * 1 = wheel speeds only. Kept low because wheel speeds lose validity once a
@@ -223,4 +200,4 @@
  * driver and the ECU integral/derivative terms use this as their time base. */
 #define CONTROL_DT_S 0.01f
 
-#endif /* PARAMETERS_CONFIG_H */
+#endif /* CONSTANTS_CONFIG_H */

@@ -1,6 +1,12 @@
 #include "../include/torque_vectoring.h"
 #include "../../shared/vehicle_config.h"
+#include "../../shared/tunables.h"
 #include <math.h>
+
+/* The TV yaw gains (g_KP_YAW_DEFAULT, g_TV_KFF) are runtime tunables defined in
+ * shared/tunables.c (defaults + TUNE_* env overrides). They are read directly
+ * below; the ECU only extern-references them via shared/tunables.h, so the HIL
+ * boundary still holds (shared/ is the one place both sides may share code). */
 
 /*
  * torque_vectoring.c
@@ -30,16 +36,14 @@
  * The controller keeps a little internal state (the integrator, previous error,
  * and lagged accel estimates) in static variables. That is safe because the HIL
  * host calls this once per fixed-rate tick, and the state self-heals (anti-wound,
- * decays to zero). Gains come from shared/parameters_config.h.
+ * decays to zero). Fixed constants come from shared/constants_config.h; the
+ * tunable yaw gains are runtime globals in shared/tunables.c.
  */
 
 /* Geometry aliases from shared/vehicle_config.h. */
 #define TV_WHEELBASE_M    WHEELBASE_M
 #define TV_TRACK_WIDTH_M  TRACK_WIDTH_M
 #define TV_WHEEL_RADIUS_M WHEEL_RADIUS_M
-
-/* Front share of the differential, derived from the rear share. */
-#define TV_FRONT_SHARE (1.0f - TV_REAR_SHARE)
 
 
 /* Controller memory. File-scope so torque_vectoring_reset() can clear it. */
@@ -197,7 +201,7 @@ void torque_vectoring_update(
      * so the moment is there before any error develops. */
     float ff = 0.0f;
     if (kp_yaw > 0.0f && sensors->velocity > 2.0f)
-        ff = TV_KFF * desired_yaw_rate * sensors->velocity;
+        ff = g_TV_KFF * desired_yaw_rate * sensors->velocity;
 
     /* Step 5: PID feedback. P trims the residual, I erases standing understeer,
      * D damps turn-in. Gain = 0 disables the whole FF+feedback path. */
