@@ -18,6 +18,7 @@ tempCodeRunnerFile.py
 
 # Editor / IDE
 .vscode/
+.claude
 .idea/
 *.swp
 *.swo

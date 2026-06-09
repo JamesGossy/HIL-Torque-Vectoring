@@ -55,8 +55,11 @@ static SensorData straight(float speed)
 /* ---- Tests ---- */
 
 /*
- * Zero yaw error on a straight at speed -> perfectly even split.
- * desired = actual = 0, so bias = 0.
+ * Zero yaw error on a straight at speed -> no left/right differential and the
+ * driver's total torque is delivered. The grip-aware bleed distributor splits
+ * each side front/rear by that corner's grip ceiling (not a flat /4), so with
+ * zero bias the LEFT total equals the RIGHT total and the four wheels sum to the
+ * demand - that is the "even split" invariant now, not equal per-wheel torque.
  */
 static void test_zero_error_even_split(void)
 {
@@ -65,16 +68,15 @@ static void test_zero_error_even_split(void)
     float total = 40.0f; /* any positive value */
     torque_vectoring_update(&s, total, KP_YAW_DEFAULT, &t);
 
-    float expected = total * 0.25f;
-    ASSERT_NEAR(t.fl, expected, 0.01f);
-    ASSERT_NEAR(t.fr, expected, 0.01f);
-    ASSERT_NEAR(t.rl, expected, 0.01f);
-    ASSERT_NEAR(t.rr, expected, 0.01f);
+    /* No yaw demand -> left side == right side (no differential). */
+    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);
+    /* Total torque delivered (within grip; well under the ceiling here). */
+    ASSERT_NEAR(t.fl + t.fr + t.rl + t.rr, total, 0.5f);
 }
 
 /*
  * When speed < 0.5 m/s, desired_yaw_rate is set to zero regardless of steer,
- * so there is no yaw error and the split is even.
+ * so there is no yaw error and there is no left/right differential.
  */
 static void test_low_speed_no_yaw_demand(void)
 {
@@ -84,9 +86,7 @@ static void test_low_speed_no_yaw_demand(void)
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, KP_YAW_DEFAULT, &t);
 
-    float expected = 40.0f * 0.25f;
-    ASSERT_NEAR(t.fl, expected, 0.01f);
-    ASSERT_NEAR(t.fr, expected, 0.01f);
+    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f); /* no differential */
 }
 
 /*
@@ -103,13 +103,9 @@ static void test_left_turn_biases_right_wheels(void)
 
     ASSERT(t.fr > t.fl); /* right (outer) > left (inner) */
     ASSERT(t.rr > t.rl);
-    /* The differential is split front/rear by TV_REAR_SHARE: the rear axle's
-     * differential is to the front's as TV_REAR_SHARE is to (1 - TV_REAR_SHARE).
-     * Assert that ratio directly so the test tracks the tuning instead of
-     * hard-coding which axle carries the larger share. */
-    float diff_f = t.fr - t.fl;
-    float diff_r = t.rr - t.rl;
-    ASSERT_NEAR(diff_r * (1.0f - TV_REAR_SHARE), diff_f * TV_REAR_SHARE, 0.05f);
+    /* The yaw moment is realised as a left/right differential: the right
+     * (outer) side carries more total torque than the left (inner) side. */
+    ASSERT((t.fr + t.rr) > (t.fl + t.rl));
 }
 
 /*
@@ -166,9 +162,8 @@ static void test_deadband(void)
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, KP_YAW_DEFAULT, &t);
 
-    float base = 40.0f * 0.25f;
-    ASSERT_NEAR(t.fl, base, 0.01f);
-    ASSERT_NEAR(t.fr, base, 0.01f);
+    /* Error inside the deadband -> zero bias -> no left/right differential. */
+    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);
 }
 
 /*
@@ -203,7 +198,8 @@ static void test_clamp_lower(void)
 }
 
 /*
- * Gain = 0 must produce an even split regardless of yaw error.
+ * Gain = 0 disables the yaw moment, so there is no left/right differential
+ * regardless of yaw error, and the driver's total torque is delivered.
  */
 static void test_zero_gain(void)
 {
@@ -213,11 +209,8 @@ static void test_zero_gain(void)
     WheelTorques t;
     torque_vectoring_update(&s, 60.0f, 0.0f, &t);
 
-    float base = 60.0f * 0.25f;
-    ASSERT_NEAR(t.fl, base, 0.01f);
-    ASSERT_NEAR(t.fr, base, 0.01f);
-    ASSERT_NEAR(t.rl, base, 0.01f);
-    ASSERT_NEAR(t.rr, base, 0.01f);
+    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);        /* no differential */
+    ASSERT_NEAR(t.fl + t.fr + t.rl + t.rr, 60.0f, 0.5f); /* total delivered */
 }
 
 /*
@@ -256,10 +249,11 @@ static void test_speed_gain_scaling(void)
 
 
 /*
- * Saturation-preserving clamp: with an extreme bias the outer wheel saturates
- * at the motor peak, but the differential (outer - inner) must be PRESERVED by
- * pushing the clipped amount onto the inner wheel (into regen) - not silently
- * collapsed.  High base torque so the outer side clips.
+ * Grip-aware differential under saturation: with an extreme bias the moment is
+ * carried as a left/right differential equal to the (clamped) commanded bias,
+ * bled off the grip ceilings rather than collapsed by a symmetric motor clip.
+ * The outer (right) side carries more than the inner (left), and the realised
+ * differential matches max_bias (the bias clamp in step 5).
  */
 static void test_saturation_preserves_differential(void)
 {
@@ -267,17 +261,16 @@ static void test_saturation_preserves_differential(void)
     s.steering_angle = 0.5f;
     s.yaw_rate       = -3.0f; /* large positive (understeer) error */
     WheelTorques t;
-    torque_vectoring_update(&s, 104.0f, 300.0f, &t); /* base ~26 Nm/wheel, saturating bias */
+    torque_vectoring_update(&s, 104.0f, 300.0f, &t); /* large demand + saturating bias */
 
-    /* Commanded rear differential = saturated bias (= max_bias) distributed by
-     * the rear share, which is weighted by 2x (see torque_vectoring.c step 7):
-     *   rear_diff = max_bias * (2 * TV_REAR_SHARE). */
-    float max_bias  = MAX_MOTOR_TORQUE_NM * 0.5f;
-    float want_diff = max_bias * (2.0f * TV_REAR_SHARE);
-    ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f); /* outer clipped at peak */
-    ASSERT(t.rl >= MIN_MOTOR_TORQUE_NM - 0.001f); /* inner in regen */
-    /* Differential preserved despite the clip (would collapse under a naive clamp). */
-    ASSERT_NEAR(t.rr - t.rl, want_diff, 0.5f);
+    float left     = t.fl + t.rl;
+    float right    = t.fr + t.rr;
+    float max_bias = MAX_MOTOR_TORQUE_NM * 0.5f;
+    ASSERT(right > left); /* outer side carries more */
+    /* Differential realised as the clamped bias (not collapsed by clipping). */
+    ASSERT_NEAR(right - left, max_bias, 0.5f);
+    ASSERT(t.fr <= MAX_MOTOR_TORQUE_NM + 0.001f); /* every wheel within peak */
+    ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f);
 }
 
 
