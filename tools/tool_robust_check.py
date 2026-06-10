@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
-"""Robustness probe for the steering / speed / TV tuning. Perturbs the config
-+/-pct one axis at a time and as combined jitter, reporting any that go
-off-track, so you can see how close a config sits to the off-track edge.
-
-After the controller simplification there are only four runtime tunables, applied
-via TUNE_* env vars on a binary built ONCE (no recompile per candidate)."""
+"""Robustness probe for the tuning. Perturbs the config +/-pct one axis at a time and as combined jitter, reporting any run that goes off-track. Tunables are applied via TUNE_* env vars on a binary built once."""
 import os, random, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "HIL_Firmware", "build", "eval_roblqr.exe")
+OUT = os.path.join(ROOT, "HIL_Firmware", "build", "eval_robust.exe")
 SRCS = ["tools/tool_eval_lap.c", "HIL_Firmware/src/motion_control.c",
         "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track_parser.c",
         "HIL_Firmware/src/path_planning.c",
         "ECU_Firmware/src/torque_vectoring.c", "shared/tunables.c"]
 INC = ["-I", "HIL_Firmware/include", "-I", "shared", "-I", "ECU_Firmware/include"]
 
-# Current in-source defaults (shared/tunables.c). Perturbs the high-leverage
-# gains; add any TUNE_* gain to probe its sensitivity.
-BEST = {"GRIP_USE":0.90, "K_STANLEY":8.0, "K_DAMP":0.30, "RACING_MARGIN":0.40,
-        "PP_RADIUS_FACTOR":1.6, "MAX_STEER_RAD":1.7, "MAX_BRAKE_DECEL_MS2":5.6,
-        "SPEED_KP_NM":800.0, "KP_YAW":86.2440}
+BEST = {"GRIP_USE":0.993,  # in-source defaults from shared/tunables.c "K_STANLEY":4.766, "K_DAMP":0.334, "RACING_MARGIN":0.375,
+        "PP_RADIUS_FACTOR":0.936, "MAX_STEER_RAD":2.408, "MAX_BRAKE_DECEL_MS2":3.887,
+        "SPEED_KP_NM":1187.606, "SPEED_KI_FRAC":0.829, "KP_YAW":66.208}
 NAMES = list(BEST)
 
 _built = [False]

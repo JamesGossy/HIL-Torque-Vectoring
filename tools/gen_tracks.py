@@ -1,30 +1,10 @@
 #!/usr/bin/env python3
 """
-tools/gen_tracks.py - generate HIL_Firmware/include/track_data.h from tracks/*.yaml.
+Generate HIL_Firmware/include/track_data.h from tracks/*.yaml.
 
-The tracks/*.yaml files are the source of truth for the measured boundary cones.
-The firmware is dependency-free C with no runtime file I/O, so rather than parse
-YAML at startup we generate a header of static cone arrays at build time. The
-Makefile runs this before compiling; track_parser.c includes the result and
-selects a layout by name (the TRACK environment variable).
-
-The YAML schema is intentionally tiny and fixed, so this reads it with a small
-purpose-built parser - no PyYAML dependency, only a stock Python 3 interpreter:
-
-    name: <layout-name>
-    left:
-      - [x, y]
-      ...
-    right:
-      - [x, y]
-      ...
-
-To add a track: drop another tracks/<name>.yaml in and rebuild. To change the
-default track, set the TRACK env var (see track_parser.c); the generator emits
-every track it finds.
-
-Usage:  python tools/gen_tracks.py [--check]
-        --check exits non-zero if track_data.h is stale (for CI).
+The firmware has no runtime file I/O, so we bake the cone arrays into a header
+at build time with a tiny purpose-built parser (no PyYAML). Run with --check to
+exit non-zero if the header is stale.
 """
 import glob, os, re, sys
 
@@ -36,7 +16,7 @@ POINT_RE = re.compile(r"\[\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)\s*\]")
 
 
 def parse_yaml(path):
-    """Parse one track file. Returns (name, left_points, right_points)."""
+    # Parse one track file. Returns (name, left_points, right_points).
     name = None
     sections = {"left": [], "right": []}
     cur = None
@@ -131,7 +111,7 @@ def main():
         print("track_data.h up to date")
         return
     if existing == text:
-        return  # avoid touching mtime so make doesn't rebuild needlessly
+        return  # don't touch mtime so make doesn't rebuild needlessly
     with open(OUT, "w") as f:
         f.write(text)
     names = [parse_yaml(f)[0] for f in sorted(glob.glob(os.path.join(TRACKS_DIR, "*.yaml")))]

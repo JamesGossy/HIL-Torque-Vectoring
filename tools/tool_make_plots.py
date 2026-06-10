@@ -1,18 +1,6 @@
 """
-make_plots.py
-
-Runs the HIL simulation and turns the real STATE telemetry into static plots
-for the README. No hand-faked data: every line is captured from hil_sim.
-
-Produces (in docs/):
-  speed_trace.png    actual speed vs the planner's target speed, one lap
-  torque_corner.png  the four wheel torques through one corner (shows vectoring)
-
-Usage:
-    python tools/make_plots.py
-
-Env:
-    TRACK   track layout (default fsg2024), forwarded to hil_sim
+Runs the HIL simulation and turns real STATE telemetry into static plots for the README.
+Produces docs/speed_trace.png and docs/torque_corner.png. TRACK env picks the layout.
 """
 
 import os
@@ -32,12 +20,11 @@ HIL_SIM_EXE = os.path.join(REPO_ROOT, "HIL_Firmware", "build", "hil_sim")
 if sys.platform == "win32" and not HIL_SIM_EXE.endswith(".exe"):
     HIL_SIM_EXE += ".exe"
 
-# Dark theme to match the visualiser / GIF
 BG = "#1a1a1a"
 FG = "#dcdcdc"
 GRID = "#3a3a3a"
 GREEN = "#64dc96"    # actual
-YELLOW = "#ffc832"   # desired / target
+YELLOW = "#ffc832"   # target
 CYAN = "#00d2ff"
 FL = "#64b4ff"
 FR = "#64dc96"
@@ -54,8 +41,7 @@ def run_one_lap():
         stderr=subprocess.DEVNULL,
     )
 
-    # Skip the three header blocks
-    for terminator in ("END_TRACK", "END_LEFT_CONES", "END_RIGHT_CONES"):
+    for terminator in ("END_TRACK", "END_LEFT_CONES", "END_RIGHT_CONES"):  # skip header blocks
         while True:
             raw = proc.stdout.readline()
             if not raw:
@@ -91,10 +77,6 @@ def run_one_lap():
     proc.terminate()
 
     a = np.array(rows)
-    # Column order after STATE (0-indexed into vals):
-    # 0 x 1 y 2 heading 3 speed_kmh 4 yaw_deg_s 5 fl 6 fr 7 rl 8 rr 9 tv
-    # 10 kp 11 lap 12 elapsed_s 13 steering 14 slip 15 desired_yaw 16 ax
-    # 17 ay 18 vy 19 target_kmh
     return {
         "t": a[:, 12] - a[0, 12],
         "speed": a[:, 3],
@@ -106,8 +88,7 @@ def run_one_lap():
 
 
 def smooth(y, n=5):
-    """Light centred moving average so the per-tick controller noise doesn't
-    bury the underlying left/right split. Window is short (n ticks ~ 0.5 s)."""
+    """Light centred moving average to remove per-tick controller noise."""
     if n < 2:
         return y
     k = np.ones(n) / n
@@ -140,8 +121,7 @@ def main():
 
     d = run_one_lap()
 
-    # --- Speed vs target ---
-    fig, ax = plt.subplots(figsize=(8, 3.2))
+    fig, ax = plt.subplots(figsize=(8, 3.2))  # speed vs target
     style(ax)
     ax.plot(d["t"], d["target"], color=YELLOW, lw=2, label="planned target speed")
     ax.plot(d["t"], d["speed"], color=GREEN, lw=2, label="actual speed")
@@ -152,10 +132,7 @@ def main():
     ax.set_xlim(d["t"][0], d["t"][-1])
     save(fig, "speed_trace.png")
 
-    # --- Four wheel torques through ONE corner ---
-    # The full-lap torque trace is too dense to read, so zoom into the single
-    # hardest corner (highest sustained yaw rate) where the left/right split is
-    # clearest. A short moving average removes per-tick noise.
+    # zoom into the hardest corner (highest sustained yaw rate) where the split is clearest
     dt = np.median(np.diff(d["t"]))
     w = max(1, int(round(3.0 / dt)))            # 3-second window
     yaw_abs = np.abs(d["yaw"])

@@ -1,26 +1,11 @@
 """
-visualiser.py
+Runs hil_sim as a subprocess and draws its STATE stream in a pygame window.
+Keypresses are forwarded to hil_sim's stdin. Needs pygame. Run: python visualiser.py.
 
-Launches the HIL simulation (hil_sim) and draws its output in a pygame window.
-
-How it works:
-  - hil_sim is started as a subprocess. Its stdout is piped to this script.
-  - hil_sim first prints the track waypoints (a header block), then streams
-    one STATE line per display tick (20 Hz).
-  - This script reads those lines and redraws the window each frame.
-  - Keypresses in the pygame window are forwarded to hil_sim's stdin so the
-    t / [ / ] / q controls still work.
-
-STATE protocol (21 fields):
+STATE line has 21 fields:
   STATE x y heading speed_kmh yaw_deg_s fl fr rl rr tv kp lap elapsed_s
         steering_rad slip_angle_rad desired_yaw_rad_s ax_ms2 ay_ms2 vy_ms
         target_speed_kmh
-
-Install pygame with:
-    pip install pygame
-
-Run with:
-    python visualiser.py
 """
 
 import subprocess
@@ -33,7 +18,6 @@ import collections
 import pygame
 
 
-# ---- Path to the simulation binary ----
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 HIL_SIM_EXE = os.path.join(SCRIPT_DIR, "HIL_Firmware", "build", "hil_sim")
 
@@ -41,9 +25,8 @@ if sys.platform == "win32" and not HIL_SIM_EXE.endswith(".exe"):
     HIL_SIM_EXE += ".exe"
 
 
-# ---- Window and colours ----
 WINDOW_W = 1400
-WINDOW_H = 900   # raised to fit the SPEED-vs-TARGET chart added to the panel
+WINDOW_H = 900   # tall enough to fit the speed-vs-target chart
 
 BLACK      = (10,  10,  10)
 DARK_GREY  = (30,  30,  30)
@@ -60,8 +43,8 @@ HEADING_COL  = (255, 200,  50)
 TV_ON_COL    = (80,  220,  80)
 TV_OFF_COL   = (220,  80,  80)
 
-TRAJ_ON_COL  = ( 60, 200,  60)   # dark green  - trajectory with TV on
-TRAJ_OFF_COL = (200, 160,  40)   # amber       - trajectory with TV off
+TRAJ_ON_COL  = ( 60, 200,  60)   # trajectory with TV on
+TRAJ_OFF_COL = (200, 160,  40)   # trajectory with TV off
 
 FL_COL    = (100, 180, 255)
 FR_COL    = (100, 220, 150)
@@ -69,18 +52,18 @@ RL_COL    = (255, 180, 100)
 RR_COL    = (220, 100, 200)
 REGEN_COL = (80,  160, 255)
 
-YAW_ACTUAL_COL  = (100, 220, 150)   # green  – actual yaw rate
-YAW_DESIRED_COL = (255, 200,  50)   # yellow – desired yaw rate
+YAW_ACTUAL_COL  = (100, 220, 150)   # actual yaw rate
+YAW_DESIRED_COL = (255, 200,  50)   # desired yaw rate
 
-SPEED_ACTUAL_COL = (100, 220, 150)  # green  – actual speed
-SPEED_TARGET_COL = (255, 200,  50)  # yellow – planner target speed
+SPEED_ACTUAL_COL = (100, 220, 150)  # actual speed
+SPEED_TARGET_COL = (255, 200,  50)  # planner target speed
 
 SLIP_GREEN  = ( 80, 220,  80)
 SLIP_YELLOW = (220, 200,  50)
 SLIP_RED    = (220,  80,  80)
 
-US_COL   = (255, 160,  40)   # orange - understeer
-OS_COL   = (220,  60,  60)   # red    - oversteer
+US_COL   = (255, 160,  40)   # understeer
+OS_COL   = (220,  60,  60)   # oversteer
 
 LAP_TV_ON_COL  = ( 80, 220,  80)
 LAP_TV_OFF_COL = (220, 200,  50)
@@ -89,8 +72,7 @@ GG_DOT_COL    = (255, 240,  50)   # current G-G point
 GG_TRAIL_COL  = ( 80, 120, 180)   # history trail
 
 
-# ---- Track geometry ----
-TRACK_WIDTH = 8.0     # metres (used for bounding-box margin only)
+TRACK_WIDTH = 8.0     # metres, used for bounding-box margin only
 
 TRACK_WAYPOINTS  = []
 LEFT_CONE_PTS    = []   # screen-space blue cone positions
@@ -102,21 +84,17 @@ CONE_YELLOW      = (255, 210,   0)
 CONE_YELLOW_EDGE = (255, 240, 120)
 CONE_ORANGE      = (255, 120,   0)
 
-RACING_LINE_COL  = (  0, 210, 255)   # cyan - optimal racing line
+RACING_LINE_COL  = (  0, 210, 255)   # optimal racing line
 
 
-# ---- View modes ----
-# MAP mode   : entire track fits the viewport (default)
-# FOLLOW mode: fixed zoom centred on the car, toggled with M key
-VIEW_MODE_MAP    = 0
-VIEW_MODE_FOLLOW = 1
+VIEW_MODE_MAP    = 0   # whole track fits the viewport
+VIEW_MODE_FOLLOW = 1   # fixed zoom centred on the car, toggled with M
 _view_mode       = VIEW_MODE_MAP
 
 FOLLOW_SCALE    = 12.0   # px per metre in follow-cam
 FOLLOW_VIEW_W   = None   # set at runtime to VIEW_W
 FOLLOW_VIEW_H   = None   # set at runtime to VIEW_H
 
-# ---- Coordinate mapping ----
 VIEW_X = 20
 VIEW_Y = 20
 VIEW_W = 680
@@ -126,19 +104,19 @@ _SCALE     = 1.0
 _OFF_X     = 0.0
 _OFF_Y     = 0.0
 
-# Saved map transform - restored after each follow-cam frame
+# Saved map transform, restored after each follow-cam frame
 _MAP_SCALE = 1.0
 _MAP_OFF_X = 0.0
 _MAP_OFF_Y = 0.0
 
-# Cached track screen coords - computed once in set_track_bounds(), used every frame.
-_TRACK_SCREEN_PTS = []
+_TRACK_SCREEN_PTS = []   # cached track screen coords, set once in set_track_bounds()
 
-# World-space cone positions (kept for follow-cam reprojection each frame)
+# World-space cone positions, kept for follow-cam reprojection each frame
 _LEFT_WORLD  = []
 _RIGHT_WORLD = []
 
 
+# Compute the map transform and cache track screen coords from the waypoints.
 def set_track_bounds(waypoints):
     global _SCALE, _OFF_X, _OFF_Y, _TRACK_SCREEN_PTS
     if not waypoints:
@@ -160,8 +138,7 @@ def set_track_bounds(waypoints):
     _OFF_X = VIEW_X + (VIEW_W - used_w) / 2.0 - min_x * _SCALE
     _OFF_Y = VIEW_Y + (VIEW_H - used_h) / 2.0 - min_y * _SCALE
 
-    # Save the map transform so follow-cam can restore it
-    global _MAP_SCALE, _MAP_OFF_X, _MAP_OFF_Y
+    global _MAP_SCALE, _MAP_OFF_X, _MAP_OFF_Y   # save so follow-cam can restore it
     _MAP_SCALE = _SCALE
     _MAP_OFF_X = _OFF_X
     _MAP_OFF_Y = _OFF_Y
@@ -169,8 +146,8 @@ def set_track_bounds(waypoints):
     _TRACK_SCREEN_PTS = [world_to_screen(wx, wy) for (wx, wy) in waypoints]
 
 
+# Store world-frame cone positions and cache their map-scale screen coords.
 def update_cone_screen_pts(left_world, right_world):
-    """Store world-frame cone positions and cache map-scale screen coords."""
     global LEFT_CONE_PTS, RIGHT_CONE_PTS, _LEFT_WORLD, _RIGHT_WORLD
     _LEFT_WORLD    = list(left_world)
     _RIGHT_WORLD   = list(right_world)
@@ -178,8 +155,8 @@ def update_cone_screen_pts(left_world, right_world):
     RIGHT_CONE_PTS = [world_to_screen(wx, wy) for (wx, wy) in right_world]
 
 
+# Override the transform so the car stays centred in the viewport.
 def set_follow_transform(car_x, car_y):
-    """Override the coordinate transform so the car stays centred in the viewport."""
     global _SCALE, _OFF_X, _OFF_Y
     cx = VIEW_X + VIEW_W / 2.0
     cy = VIEW_Y + VIEW_H / 2.0
@@ -188,25 +165,27 @@ def set_follow_transform(car_x, car_y):
     _OFF_Y = cy - car_y * _SCALE
 
 
+# Restore the full-track transform.
 def restore_map_transform():
-    """Restore the full-track coordinate transform."""
     global _SCALE, _OFF_X, _OFF_Y
     _SCALE = _MAP_SCALE
     _OFF_X = _MAP_OFF_X
     _OFF_Y = _MAP_OFF_Y
 
 
+# Map a world point to integer screen coords.
 def world_to_screen(wx, wy):
     sx = _OFF_X + wx * _SCALE
     sy = (2 * VIEW_Y + VIEW_H) - (_OFF_Y + wy * _SCALE)
     return (int(sx), int(sy))
 
 
+# Convert a world length in metres to pixels.
 def world_len_to_pixels(metres):
     return max(1, int(metres * _SCALE))
 
 
-# ---- State parsed from hil_sim stdout ----
+# Holds the latest state parsed from a hil_sim STATE line.
 class SimState:
     def __init__(self):
         self.x               = 0.0
@@ -260,9 +239,8 @@ class SimState:
         return True
 
 
-# ---- Lap time tracker ----
+# Records completed lap times for TV-on and TV-off separately.
 class LapTimer:
-    """Records completed lap times for TV-on and TV-off separately."""
     def __init__(self):
         self._prev_lap      = 0
         self._lap_start_s   = 0.0
@@ -291,22 +269,20 @@ class LapTimer:
         return elapsed_s - self._lap_start_s
 
 
-# ---- History lengths ----
 YAW_HISTORY_LEN = 100   # ~5 s at 20 Hz
 SPEED_HISTORY_LEN = 100 # ~5 s at 20 Hz
 TRAJ_HISTORY_LEN = 500  # trajectory trace
 GG_HISTORY_LEN   = 200  # G-G diagram trail
 
 
-# ---- Background reader thread ----
+# Drain hil_sim stdout into the queue on a background thread.
 def reader_thread(proc, line_queue):
     for raw_line in proc.stdout:
         line_queue.put(raw_line.decode("utf-8", errors="replace").rstrip())
     line_queue.put(None)
 
 
-# ---- Drawing helpers ----
-
+# Draw a closed path with rounded vertices.
 def _stroke_path(surface, points, colour, width):
     if len(points) < 2:
         return
@@ -316,46 +292,39 @@ def _stroke_path(surface, points, colour, width):
         pygame.draw.circle(surface, colour, p, radius)
 
 
+# Draw the optimal racing line through the gate waypoints.
 def draw_racing_line(surface):
-    """Draw the pre-computed optimal racing line through the gate waypoints."""
     if len(TRACK_WAYPOINTS) < 2:
         return
     pts = [world_to_screen(wx, wy) for (wx, wy) in TRACK_WAYPOINTS]
     pygame.draw.lines(surface, RACING_LINE_COL, True, pts, 2)
 
 
+# Draw the asphalt polygon between the cone boundaries plus the cone dots.
 def draw_track(surface):
-    """Draw track surface as a filled polygon between left and right cones, plus cone dots.
-    Uses _LEFT_WORLD/_RIGHT_WORLD so it works correctly in both map and follow-cam modes."""
     left  = [world_to_screen(wx, wy) for (wx, wy) in _LEFT_WORLD]
     right = [world_to_screen(wx, wy) for (wx, wy) in _RIGHT_WORLD]
 
-    # Filled asphalt polygon: left cones forward + right cones reversed.
-    # Close each boundary back to its own start so the start/finish seam
-    # is filled rather than cut across by the polygon closing edge.
+    # close each boundary to its own start so the start/finish seam fills cleanly
     if len(left) >= 2 and len(right) >= 2:
         poly = left + [left[0]] + [right[0]] + list(reversed(right))
         pygame.draw.polygon(surface, (45, 45, 45), poly)
         pygame.draw.lines(surface, (70, 70, 70), True, left,  1)
         pygame.draw.lines(surface, (70, 70, 70), True, right, 1)
 
-    # Cone radius in pixels - fixed 4px min so they're always visible on map,
-    # larger in follow-cam where the scale is higher
-    r = max(4, world_len_to_pixels(0.18))
+    r = max(4, world_len_to_pixels(0.18))   # 4px min so cones stay visible on the map
 
-    # Blue (left) cones
-    for pt in left:
+    for pt in left:   # blue cones
         pygame.draw.circle(surface, CONE_BLUE,      pt, r)
         pygame.draw.circle(surface, CONE_BLUE_EDGE, pt, r, 1)
 
-    # Yellow (right) cones
-    for pt in right:
+    for pt in right:   # yellow cones
         pygame.draw.circle(surface, CONE_YELLOW,      pt, r)
         pygame.draw.circle(surface, CONE_YELLOW_EDGE, pt, r, 1)
 
 
+# Draw the trajectory trace behind the car, coloured by TV on/off.
 def draw_trajectory_trace(surface, traj_deque):
-    """Draw TV-on (green) / TV-off (amber) trajectory trace behind the car."""
     if len(traj_deque) < 2:
         return
 
@@ -370,7 +339,7 @@ def draw_trajectory_trace(surface, traj_deque):
             if len(run_pts) >= 2:
                 col = TRAJ_ON_COL if run_tv else TRAJ_OFF_COL
                 pygame.draw.lines(surface, col, False, run_pts, 2)
-            run_pts = run_pts[-1:]   # carry last point to avoid a gap
+            run_pts = run_pts[-1:]   # carry last point so there is no gap
             run_tv = tv
         run_pts.append((sx, sy))
 
@@ -379,8 +348,8 @@ def draw_trajectory_trace(surface, traj_deque):
         pygame.draw.lines(surface, col, False, run_pts, 2)
 
 
+# Draw a rotated rectangle for the car body.
 def draw_car(surface, state):
-    """Draw a rotated rectangle for the car body (2.8 m × 1.2 m) with a heading arrow."""
     sx, sy   = world_to_screen(state.x, state.y)
     h        = state.heading
     half_l   = world_len_to_pixels(1.4)    # half car length
@@ -389,7 +358,7 @@ def draw_car(surface, state):
     cos_h = math.cos(h)
     sin_h = math.sin(h)
 
-    # In screen coords: forward = (cos h, -sin h), right = (sin h, cos h)
+    # screen coords: forward = (cos h, -sin h), right = (sin h, cos h)
     corners = [
         (sx + half_l * cos_h + half_w * sin_h,
          sy - half_l * sin_h + half_w * cos_h),   # front-right
@@ -406,14 +375,9 @@ def draw_car(surface, state):
     pygame.draw.polygon(surface, CAR_OUTLINE, ipts, 2)
 
 
+# Draw four wheel-torque bars, drive up and regen down on a symmetric scale.
 def draw_torque_bars(surface, font, state, panel_x, panel_y):
-    # Symmetric ±SCALE_NM scale: drive (up) and regen (down) share the same
-    # Nm-per-pixel, so a +15 Nm drive bar and a -15 Nm regen bar are the same
-    # length - the bars now read as honest, comparable magnitudes.  In normal
-    # driving the differential keeps torques within roughly -19..+29 Nm; the
-    # scale is set to the motor peak and any larger excursion is clamped to the
-    # bar height rather than overflowing.
-    SCALE_NM  = 29.4
+    SCALE_NM  = 29.4   # motor peak, drive and regen share Nm-per-pixel; excess is clamped
     BAR_W     = 50
     HALF_H    = 32
     BAR_MAX_H = HALF_H * 2
@@ -449,6 +413,7 @@ def draw_torque_bars(surface, font, state, panel_x, panel_y):
         surface.blit(val, (bx + BAR_W // 2 - val.get_width() // 2, by + BAR_MAX_H + 13))
 
 
+# Draw a steering wheel rotated to the current steer angle.
 def draw_steering_wheel(surface, font_small, state, cx, cy, radius=28):
     MAX_STEER_RAD   = 0.35
     MAX_VISUAL_DEG  = 90.0
@@ -473,6 +438,7 @@ def draw_steering_wheel(surface, font_small, state, cx, cy, radius=28):
     surface.blit(lbl, (cx - lbl.get_width() // 2, cy + radius + 4))
 
 
+# Draw a coloured slip-angle bar.
 def draw_slip_gauge(surface, font_small, state, gx, gy, width=110, height=14):
     MAX_SLIP_DEG = 10.0
     slip_deg = abs(math.degrees(state.slip_angle))
@@ -494,13 +460,10 @@ def draw_slip_gauge(surface, font_small, state, gx, gy, width=110, height=14):
     pygame.draw.rect(surface, LIGHT_GREY, (gx, bar_y, width, height), 1)
 
 
+# Draw an understeer/oversteer indicator from the yaw-rate error.
 def draw_us_os_bar(surface, font_small, state, gx, gy, width=270, height=14):
-    """
-    Understeer / oversteer indicator.
-    Value = desired_yaw - actual_yaw.
-    Positive = understeer (nose goes wide), negative = oversteer (rear goes wide).
-    """
     MAX_ERR_RAD_S = 1.5
+    # positive yaw_err = understeer (nose wide), negative = oversteer (rear wide)
     yaw_err = state.desired_yaw - math.radians(state.yaw_degs)
 
     lbl = font_small.render("UNDERSTEER  ←  0  →  OVERSTEER", True, LIGHT_GREY)
@@ -525,6 +488,7 @@ def draw_us_os_bar(surface, font_small, state, gx, gy, width=270, height=14):
     pygame.draw.rect(surface, LIGHT_GREY, (gx, bar_y, width, height), 1)
 
 
+# Draw a time-series chart of desired vs actual yaw rate.
 def draw_yaw_chart(surface, font_small, actual_hist, desired_hist, chart_x, chart_y,
                    chart_w=230, chart_h=70):
     MAX_YAW = 4.0
@@ -562,11 +526,10 @@ def draw_yaw_chart(surface, font_small, actual_hist, desired_hist, chart_x, char
     surface.blit(font_small.render("actual",  True, YAW_ACTUAL_COL),  (lx + 15, ly2))
 
 
+# Draw a time-series chart of actual vs planner target speed in km/h.
 def draw_speed_chart(surface, font_small, actual_hist, target_hist, chart_x, chart_y,
                      chart_w=230, chart_h=70):
-    """Time-series of actual speed (green) vs planner target speed (yellow), km/h.
-    Zero-based y-axis (speed is non-negative); auto-scales to TARGET_SPEED headroom."""
-    MAX_KMH = 80.0   # full-scale; TARGET_SPEED_MS=20 -> 72 km/h, leaves headroom
+    MAX_KMH = 80.0   # full-scale, leaves headroom above the 72 km/h target
 
     pygame.draw.rect(surface, DARK_GREY, (chart_x, chart_y, chart_w, chart_h))
     pygame.draw.rect(surface, MID_GREY,  (chart_x, chart_y, chart_w, chart_h), 1)
@@ -598,13 +561,10 @@ def draw_speed_chart(surface, font_small, actual_hist, target_hist, chart_x, cha
     surface.blit(font_small.render("actual", True, SPEED_ACTUAL_COL), (lx + 15, ly2))
 
 
+# Draw a G-G friction-circle diagram of longitudinal vs lateral acceleration.
 def draw_gg_diagram(surface, font_small, gg_hist, gx, gy, size=130):
-    """
-    G-G (friction circle) diagram.  Shows longitudinal (ax) vs lateral (ay) acceleration.
-    Scale: ±1.5 g. Friction limit circle drawn at 1.2 g (MU_TYRE).
-    """
     G_SCALE = 1.5
-    MU_G    = 1.2
+    MU_G    = 1.2   # friction limit circle, drawn at MU_TYRE
     CX      = gx + size // 2
     CY      = gy + size // 2
     HALF    = size // 2 - 4
@@ -612,20 +572,17 @@ def draw_gg_diagram(surface, font_small, gg_hist, gx, gy, size=130):
     pygame.draw.rect(surface, DARK_GREY, (gx, gy, size, size))
     pygame.draw.rect(surface, MID_GREY,  (gx, gy, size, size), 1)
 
-    # Axis lines
     pygame.draw.line(surface, MID_GREY, (CX, gy + 2),    (CX, gy + size - 2), 1)
     pygame.draw.line(surface, MID_GREY, (gx + 2, CY),    (gx + size - 2, CY), 1)
 
-    # Friction limit circle
     fric_r = int(HALF * MU_G / G_SCALE)
     pygame.draw.circle(surface, LIGHT_GREY, (CX, CY), fric_r, 1)
 
     def gg_to_screen(ax_g, ay_g):
         px = CX + int(ay_g / G_SCALE * HALF)       # lateral = horizontal
-        py = CY - int(ax_g / G_SCALE * HALF)       # longitudinal = vertical (ax+ = up = accel)
+        py = CY - int(ax_g / G_SCALE * HALF)       # longitudinal = vertical, accel up
         return (px, py)
 
-    # History trail
     trail = list(gg_hist)
     n = len(trail)
     for i, (ax_g, ay_g) in enumerate(trail):
@@ -768,9 +725,7 @@ def draw_panel(surface, font_large, font, font_small,
     surface.blit(font_large.render(f"{lat_g:.2f} g",              True, WHITE), (col2, py))
     py += font_large.get_height() + 4
 
-    # Speed vs planner target, time-series.  The actual line dropping toward the
-    # target line at corner entry shows the car bleeding speed to plan; actual
-    # riding above target = arriving too fast.
+    # speed vs planner target
     over_target = state.speed_kmh > state.target_kmh + 1.0
     hdr_col     = US_COL if over_target else LIGHT_GREY
     py = label(f"SPEED vs TARGET  (km/h)   tgt {state.target_kmh:.0f}", py, colour=hdr_col)
@@ -849,6 +804,7 @@ def main():
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        env=os.environ,
     )
 
     global TRACK_WAYPOINTS
@@ -908,11 +864,7 @@ def main():
     t.start()
 
     pygame.init()
-    # The window is freely resizable / movable and can go fullscreen.  All
-    # drawing is done at a FIXED logical resolution (WINDOW_W x WINDOW_H) onto an
-    # off-screen `canvas`, which is then scaled (preserving aspect ratio, with
-    # letterboxing) to fit whatever size the window currently is.  This keeps the
-    # whole panel layout intact at any window size without per-widget rescaling.
+    # draw at a fixed logical size onto a canvas, then scale it to the window with letterboxing
     window = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
     canvas = pygame.Surface((WINDOW_W, WINDOW_H))
     screen = canvas                      # everything below draws to the canvas
@@ -974,8 +926,7 @@ def main():
                 running = False
 
             elif event.type == pygame.VIDEORESIZE:
-                # User dragged the window edge - remember the new size; the
-                # canvas is scaled to it in present().
+                # window resized, remember the new size
                 if not is_fullscreen:
                     win_w, win_h = max(1, event.w), max(1, event.h)
                     window = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)

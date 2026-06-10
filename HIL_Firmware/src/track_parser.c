@@ -1,78 +1,61 @@
 #include "../include/track_parser.h"
 #include "../include/path_planning.h"
-#include "../include/track_data.h" /* generated from the track YAML by tools/gen_tracks.py */
+#include "../include/track_data.h" // generated from the track YAML by tools/gen_tracks.py
 
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * track_parser.c - select a cone layout and build the racing line from it.
- *
- * The cone arrays and the TRACK_DATA[] table are generated into track_data.h
- * from the track YAML (the source of truth) by tools/gen_tracks.py, which the
- * Makefile runs before compiling. This file picks one layout by name - the
- * TRACK environment variable, defaulting to "fsg2024" - copies its boundary
- * cones into the Track, and calls path_plan() to build the waypoints.
- *
- * To add or edit a track, change the YAML and rebuild; nothing here needs to
- * change. Every sim entry point goes through track_init(), and the visualiser
- * draws whatever cones the program prints.
- */
+// Selects a cone layout by name and builds the racing line from it.
 
 #define DEFAULT_TRACK "fsg2024"
 
-/* Select the layout named by the TRACK environment variable, falling back to
- * DEFAULT_TRACK if TRACK is unset or names an unknown layout. */
+// Returns the layout named by the TRACK env var, or DEFAULT_TRACK if unset or unknown.
 static const TrackLayout *select_layout(void)
 {
+    // match the requested name first
     const char *want = getenv("TRACK");
     if (want && *want) {
         for (int i = 0; i < TRACK_DATA_COUNT; i++) {
             if (strcmp(want, TRACK_DATA[i].name) == 0) return &TRACK_DATA[i];
         }
     }
+    // fall back to the default track
     for (int i = 0; i < TRACK_DATA_COUNT; i++) {
         if (strcmp(DEFAULT_TRACK, TRACK_DATA[i].name) == 0) return &TRACK_DATA[i];
     }
     return &TRACK_DATA[0];
 }
 
-
-/* ------------------------------------------------------------------ */
-/* Track init                                                           */
-/* ------------------------------------------------------------------ */
-
+// Loads the selected layout's cones into the track and builds the waypoints.
 void track_init(Track *track)
 {
     const TrackLayout *layout = select_layout();
     int i;
 
+    // reset track progress
     track->count         = 0;
     track->current_index = 0;
     track->lap_count     = 0;
 
-    /* Store raw cone positions for the visualiser and path planner */
-    for (i = 0; i < layout->left_count && i < MAX_CONES; i++) {
+    // copy left cones
+    for (i = 0; i < layout->left_count && i < MAX_CONES; i++) { // raw cones for visualiser and planner
         track->left_cones[i].x = layout->left[i][0];
         track->left_cones[i].y = layout->left[i][1];
     }
     track->left_count = (layout->left_count < MAX_CONES) ? layout->left_count : MAX_CONES;
 
+    // copy right cones
     for (i = 0; i < layout->right_count && i < MAX_CONES; i++) {
         track->right_cones[i].x = layout->right[i][0];
         track->right_cones[i].y = layout->right[i][1];
     }
     track->right_count = (layout->right_count < MAX_CONES) ? layout->right_count : MAX_CONES;
 
-    /* Build racing-line waypoints from the cone positions */
     path_plan(track);
 }
 
 
-/* ------------------------------------------------------------------ */
-/* Waypoint advance                                                     */
-/* ------------------------------------------------------------------ */
-
+// Advances the current waypoint index as the car passes waypoints, counting laps.
 void track_update(Track *track, float car_x, float car_y)
 {
     int i;

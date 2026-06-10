@@ -1,25 +1,8 @@
 #!/usr/bin/env python3
-"""Compare two lap-evaluation RESULT lines and render a delta table.
+"""Compare two lap-evaluation RESULT lines and render a Markdown delta table.
 
-Parses a "current" RESULT and an optional "base" RESULT (e.g. from the target
-branch) and prints a Markdown table showing each metric and its change versus
-base. CI uses this to render a commit-to-commit delta on the GitHub Actions run
-summary; it works the same way locally.
-
-See tool_eval_common.py for the RESULT line format and field list.
-
-Usage:
-    # delta vs a base result
-    tool_compare_eval.py --current cur.txt --base base.txt
-
-    # current only (no base available - first run / new branch)
-    tool_compare_eval.py --current cur.txt
-
-Each input may be a file (containing the full evaluator output) or a literal
-"RESULT ..." string.
-
-Exit code is 0, unless --gate is passed and a regression beyond tolerance is
-found (lap time worse than --lap-tol, or more off-track ticks than base).
+Each input may be a file holding the evaluator output or a literal "RESULT ..."
+string. See tool_eval_common.py for the RESULT line format and field list.
 """
 
 import argparse
@@ -27,13 +10,11 @@ import sys
 
 from tool_eval_common import FIELDS, COUNT_KEYS, parse_result
 
-# The table uses Unicode (Δ, ✅, ⚠️). Windows' default console encoding (cp1252)
-# cannot encode these; force UTF-8 so the script works locally as well as in CI.
-for _stream in (sys.stdout, sys.stderr):
+for _stream in (sys.stdout, sys.stderr):  # force UTF-8, Windows cp1252 can't encode the table glyphs
     try:
         _stream.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass  # already UTF-8, or a stream that can't be reconfigured
+        pass
 
 
 def read_source(arg):
@@ -84,12 +65,7 @@ def render_table(cur, base):
 
 
 def find_regressions(cur, base, lap_tol):
-    """Return a list of human-readable regression strings (empty if none).
-
-    Soft gate only: lap time must not worsen beyond `lap_tol`, and off-track
-    ticks must not increase. Hard failures (no lap completed, gross off-track)
-    are handled by the CI step itself, not here.
-    """
+    """Return regression strings: lap time worse than lap_tol, or more off-track ticks."""
     regressions = []
     cur_lap, base_lap = cur.get("lap_s"), base.get("lap_s")
     if cur_lap is not None and base_lap is not None and base_lap > 0:

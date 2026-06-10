@@ -1,10 +1,7 @@
 /*
- * tools/perf_sim.c
- *
- * Compute-speed benchmark (not a unit test). Runs the main.c tick loop with no
- * real-time sleep for a fixed wall-clock time (default 1 s) and reports
- * throughput: ticks computed, real-time factor, and laps per wall-second. It
- * measures host compute speed, not driving quality. Build it with `make perf`.
+ * Compute-speed benchmark. Runs the tick loop with no real-time sleep for a
+ * fixed wall-clock time and reports throughput. Measures host speed, not
+ * driving quality. Build with `make perf`.
  */
 
 #include <stdio.h>
@@ -17,9 +14,9 @@
 #include "../shared/tv_interface.h"
 #include "../ECU_Firmware/include/torque_vectoring.h"
 
-#define DT 0.01f /* simulated seconds per tick (100 Hz), matches main.c */
+#define DT 0.01f /* simulated seconds per tick, 100 Hz */
 
-/* ---- Monotonic wall-clock, same pattern as main.c ---- */
+// Monotonic wall-clock time in seconds.
 #ifdef _WIN32
 #include <windows.h>
 static double wall_s(void)
@@ -40,10 +37,10 @@ static double wall_s(void)
 }
 #endif
 
+// Runs the tick loop for the budget and prints throughput numbers.
 int main(int argc, char **argv)
 {
-    /* Wall-clock budget in seconds (default 1.0; override with argv[1]). */
-    double budget_s = 1.0;
+    double budget_s = 1.0; // override with argv[1]
     if (argc > 1) {
         double v = atof(argv[1]);
         if (v > 0.0) budget_s = v;
@@ -59,17 +56,14 @@ int main(int argc, char **argv)
     float ih = atan2f(track.points[1].y - track.points[0].y, track.points[1].x - track.points[0].x);
     vehicle_model_init(&state, track.points[0].x, track.points[0].y, ih);
 
-    /* Clean controller state for this run (driver + LQR steering + ECU yaw PID). */
-    motion_control_reset();
+    motion_control_reset(); // clear driver and ECU state for this run
     torque_vectoring_reset();
 
     const float R2W = (2.0f * 3.14159265358979f) / (GEAR_RATIO * 60.0f);
     int start_lap   = track.lap_count;
     long ticks      = 0;
 
-    /* Check the clock only every CHECK_EVERY ticks so the timing call itself
-     * does not dominate the measured loop (and so we count whole batches). */
-    const long CHECK_EVERY = 256;
+    const long CHECK_EVERY = 256; // batch ticks so the clock call does not dominate
 
     double t0  = wall_s();
     double now = t0;
@@ -114,7 +108,7 @@ int main(int argc, char **argv)
     printf("laps completed:       %d\n", laps);
     printf("laps per wall-second: %.1f\n", laps_ps);
 
-    /* Machine-readable line for scripts / CI. */
+    // machine-readable line for scripts and CI
     printf("PERF ticks=%ld ticks_per_s=%.0f sim_s=%.2f rt_factor=%.1f "
            "laps=%d laps_per_s=%.2f wall_s=%.3f\n",
         ticks, ticks_ps, sim_s, rt_factor, laps, laps_ps, wall);

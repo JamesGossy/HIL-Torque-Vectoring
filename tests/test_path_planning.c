@@ -1,9 +1,4 @@
-/*
- * tests/test_path_planning.c
- *
- * Unit tests for path_plan().
- * Build and run via:  make test  (from the repo root)
- */
+/* Unit tests for path_plan(). Build and run via: make test */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +7,6 @@
 
 #include "../HIL_Firmware/include/path_planning.h"
 #include "../HIL_Firmware/include/track_parser.h"
-
-/* ---- Minimal test framework ---- */
 
 static int g_tests  = 0;
 static int g_passed = 0;
@@ -30,13 +23,7 @@ static int g_passed = 0;
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
-/* ---- Helpers ---- */
-
-/*
- * Build a simple oval track: N cones per side forming a rectangle.
- * Left cones are at y = +half_w, right cones at y = -half_w.
- * Cones are evenly spaced along x = 0..length.
- */
+/* Build an oval track: n cones per side forming a rectangle, evenly spaced along x. */
 static Track make_oval(int n, float length, float half_w)
 {
     Track t;
@@ -53,8 +40,6 @@ static Track make_oval(int n, float length, float half_w)
     t.right_count = n;
     return t;
 }
-
-/* ---- Tests ---- */
 
 /* path_plan must produce at least a few waypoints from a valid cone set */
 static void test_produces_waypoints(void)
@@ -87,14 +72,13 @@ static void test_no_nan_or_inf(void)
     }
 }
 
-/* a wider track gives waypoints at roughly the centreline (y ≈ 0 on a straight) */
+/* a wider track gives waypoints at roughly the centreline on a straight */
 static void test_centreline_on_straight(void)
 {
     Track t = make_oval(20, 40.0f, 3.0f);
     path_plan(&t);
 
-    /* Average y across all waypoints should be close to 0 on a symmetric track */
-    float sum_y = 0.0f;
+    float sum_y = 0.0f; // mean y should be near 0 on a symmetric track
     for (int i = 0; i < t.count; i++)
         sum_y += t.points[i].y;
     float mean_y = sum_y / (float)t.count;
@@ -125,7 +109,7 @@ static void test_minimal_cone_set(void)
     t.right_cones[1].y = -2.0f;
     t.left_count       = 2;
     t.right_count      = 2;
-    path_plan(&t); /* must not crash */
+    path_plan(&t);
     ASSERT(t.count >= 0);
 }
 
@@ -144,8 +128,6 @@ static void test_deterministic(void)
         ASSERT_NEAR(t1.points[i].y, t2.points[i].y, 1e-4f);
     }
 }
-
-/* ---- Entry point ---- */
 
 int main(void)
 {

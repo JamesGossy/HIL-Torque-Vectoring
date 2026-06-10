@@ -1,29 +1,18 @@
 #include "../include/path_planning.h"
-#include "vehicle_config.h" /* MAX_STEER_RAD, ACK_NOMINAL, apex_speed() etc. */
-#include "grip_model.h"     /* PEAK_LAT_FLAT / peak_lat() - the single grip ref */
-#include "tunables.h"       /* runtime-overridable racing-line gains */
+#include "vehicle_config.h"
+#include "grip_model.h"
+#include "tunables.h"
 #include <math.h>
 
-/*
- * Three stages:
- *   1. Gate detection: pair each left cone with its nearest right cone.
- *   2. Centreline resampling: take gate midpoints and resample to uniform spacing.
- *   3. Minimum-TIME line: bend the line within the track corridor, weighting the
- *      bend toward the corners the car is actually slow in (see
- *      optimize_racing_line). Pure minimum-curvature hugs every apex equally,
- *      which forces an infeasibly tight radius at the hairpins; the speed
- *      planner then caps the car very slow there AND the tracker runs wide onto
- *      the apex cones. The min-time weighting opens those corners up instead.
- */
+/* Builds the racing line: detect gates, resample the centreline, then bend it
+ * within the corridor to minimise lap time. */
 
-/* Cone positions, loaded from the track struct. */
 static float left_x[MAX_CONES], left_y[MAX_CONES];
 static float right_x[MAX_CONES], right_y[MAX_CONES];
 
 
-/* Gate extraction: pair each left cone with its nearest right cone. */
 #define PP_MAX_GATES     400
-#define MAX_GATE_WIDTH_M 10.0f /* reject pairs wider than this (metres) */
+#define MAX_GATE_WIDTH_M 10.0f /* reject pairs wider than this */
 
 typedef struct {
     TrackPoint left;
@@ -33,6 +22,7 @@ typedef struct {
 static Gate pp_gates[PP_MAX_GATES];
 static int pp_n_gates;
 
+/* Pair each left cone with its nearest right cone, dropping pairs that are too wide. */
 static void extract_gates(int n_left, int n_right)
 {
     int i, j;
@@ -40,7 +30,7 @@ static void extract_gates(int n_left, int n_right)
     float dx, dy, d, best_d;
     float max_w2 = MAX_GATE_WIDTH_M * MAX_GATE_WIDTH_M;
 
-    /* For each left cone, find the nearest right cone. */
+    /* nearest right cone for each left cone */
     for (i = 0; i < n_left; i++) {
         nearest_right[i] = 0;
         best_d           = 1e18f;
@@ -55,10 +45,9 @@ static void extract_gates(int n_left, int n_right)
         }
     }
 
-    /* One gate per left cone, in cone order, dropping pairs that are too wide.
-     * Cones are already ordered along the track, so gates inherit that order. */
+    /* keep pairs that are not too wide */
     pp_n_gates = 0;
-    for (i = 0; i < n_left && pp_n_gates < PP_MAX_GATES; i++) {
+    for (i = 0; i < n_left && pp_n_gates < PP_MAX_GATES; i++) { /* cones already in track order */
         int ri = nearest_right[i];
         dx     = right_x[ri] - left_x[i];
         dy     = right_y[ri] - left_y[i];
@@ -73,37 +62,22 @@ static void extract_gates(int n_left, int n_right)
 }
 
 
-/* Centreline and uniform resampling.
- * Resampling to even spacing avoids the uneven, overlapping gates you get from
- * one point per cone. */
-
-#define RESAMPLE_SPACING_M 2.5f /* target waypoint spacing, metres        */
-
-/* g_RACING_MARGIN keeps the line this fraction of the half-width off each
- * boundary. Keep it modest so tight apexes are not over-constrained, but it must
- * leave enough clearance that the tracker - which now follows the line closely -
- * does not ride the apex cones: a faithful tracker needs the line itself to
- * clear cones by more than the off-track threshold plus its own cross-track
- * error. It is the racing line's one runtime tunable (g_RACING_MARGIN) in
- * shared/tunables.c; the line's grip and radius floor are now DERIVED from
- * vehicle_config.h (PEAK_LAT_FLAT / peak_lat() and PP_MIN_RADIUS_M). */
+#define RESAMPLE_SPACING_M 2.5f /* target waypoint spacing, m */
 #define OPT_PASSES 400
 
-/* Centreline (one entry per gate, in order) */
 static float cl_x[PP_MAX_GATES];
 static float cl_y[PP_MAX_GATES];
-static float cl_h[PP_MAX_GATES]; /* corridor half-width at this point       */
+static float cl_h[PP_MAX_GATES]; /* corridor half-width */
 
-/* Resampled, uniformly spaced racing-line buffers */
-static float rs_x[MAX_WAYPOINTS]; /* centreline (reference)                  */
+static float rs_x[MAX_WAYPOINTS];
 static float rs_y[MAX_WAYPOINTS];
-static float rs_h[MAX_WAYPOINTS];  /* half-width                              */
-static float rs_nx[MAX_WAYPOINTS]; /* unit track normal                       */
+static float rs_h[MAX_WAYPOINTS];   /* half-width */
+static float rs_nx[MAX_WAYPOINTS];  /* unit track normal */
 static float rs_ny[MAX_WAYPOINTS];
-static float rs_off[MAX_WAYPOINTS]; /* lateral offset along the normal         */
+static float rs_off[MAX_WAYPOINTS]; /* lateral offset along the normal */
 static int rs_n;
 
-/* Build the centreline (gate midpoints + half-widths) from the gates. */
+/* Build the centreline (gate midpoints and half-widths) from the gates. */
 static void build_centreline(void)
 {
     int i;
@@ -116,32 +90,32 @@ static void build_centreline(void)
     }
 }
 
-/* Resample the closed centreline to uniform spacing, interpolating position
- * and half-width. */
+/* Resample the closed centreline to uniform spacing, interpolating position and half-width. */
 static void resample_centreline(void)
 {
     int g = pp_n_gates;
     int i;
     float total = 0.0f;
 
+    /* total centreline length */
     for (i = 0; i < g; i++) {
         int j = (i + 1) % g;
         total += sqrtf(
             (cl_x[j] - cl_x[i]) * (cl_x[j] - cl_x[i]) + (cl_y[j] - cl_y[i]) * (cl_y[j] - cl_y[i]));
     }
 
+    /* pick point count and uniform step */
     int m = (int)(total / RESAMPLE_SPACING_M + 0.5f);
     if (m < 8) m = 8;
     if (m > MAX_WAYPOINTS) m = MAX_WAYPOINTS;
     float step = total / (float)m;
 
-    /* O(m*g): re-walks from segment 0 per output point. Fine at track sizes. */
-    int seg       = 0;
+    int seg       = 0; /* O(m*g) re-walk from segment 0 per point, fine at track sizes */
     float seg_acc = 0.0f;
     float seg_len = 0.0f;
     (void)seg;
     (void)seg_acc;
-    (void)seg_len; /* initialised inside the loop */
+    (void)seg_len;
 
     for (i = 0; i < m; i++) {
         float target = i * step;
@@ -170,7 +144,7 @@ static void resample_centreline(void)
     rs_n = m;
 }
 
-/* Unit track normals from the resampled (uniform) centreline. */
+/* Unit track normals from the resampled centreline. */
 static void compute_normals(void)
 {
     int i, n = rs_n;
@@ -185,49 +159,13 @@ static void compute_normals(void)
             rs_ny[i] = 0.0f;
             continue;
         }
-        /* left-hand normal */
-        rs_nx[i] = -ty / len;
+        rs_nx[i] = -ty / len; /* left-hand normal */
         rs_ny[i] = tx / len;
     }
 }
 
 
-/* ====================================================================== *
- *  Minimum-LAP-TIME racing line                                          *
- * ====================================================================== *
- *
- * The previous lines (centreline, minimum-curvature, minimum-time-weighted
- * curvature) are all PURELY GEOMETRIC: they shape the path from curvature alone
- * and never see the car's speed. The fastest line is not the lowest-curvature
- * one - it is the one that minimises the time T = Sum ds_i / v_i, where v_i is
- * the speed the car can actually carry at that point.
- *
- * That coupling is what produces real racing behaviour the geometric lines
- * cannot:
- *   - out-in-out: enter wide, touch the apex, exit wide (max radius = max speed)
- *   - LATE APEX: when a straight follows a corner, sacrifice apex speed to
- *     straighten the EXIT, because carrying speed onto a long straight is worth
- *     more time than a faster apex. A geometric line is symmetric and blind to
- *     what follows the corner; a lap-time objective is not.
- *
- * Method (quasi-steady-state lap-time model + coordinate descent):
- *   1. Seed the offsets with the minimum-curvature line (a good, smooth start so
- *      the local search converges fast and avoids silly minima).
- *   2. lap_time(): from the candidate offsets, build the speed profile with a
- *      forward+backward pass under the friction circle (apex cap from lateral
- *      grip, forward accel limit, backward brake limit), then sum ds/v.
- *   3. Coordinate descent: nudge each point's offset +/-delta along its normal,
- *      keep the nudge if it lowers lap time, anneal delta over passes.
- *
- * Runs once at startup, so the O(passes * n^2) cost is irrelevant.
- *
- * The solver optimises against the car's FULL physical grip (peak_lat(), the
- * tyre limit plus downforce, well above the GRIP_USE-scaled budget the on-car
- * planner drives with) so the LINE GEOMETRY reflects what the car can really do.
- * The car still plans its speed conservatively (GRIP_USE < 1); only the shape of
- * the path comes from this solve. The grip is no longer a tunable - it is the
- * physically-derived peak from grip_model.h, kept feasible by the PP_MIN_RADIUS_M
- * floor below. */
+/* ---- speed profile ---- */
 
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
@@ -236,45 +174,21 @@ static void compute_normals(void)
 #ifndef PP_BRAKE_LON
 #define PP_BRAKE_LON 9.0f
 #endif
-/* Top speed cap for the profile, m/s (matches the car's TARGET_SPEED_MS). */
-#define PP_V_MAX 30.0f
+#define PP_V_MAX 30.0f /* top speed cap for the profile, m/s */
 
-/* Feasibility floor: the car's steering geometry gives a kinematic minimum
- * turning radius (full lock), but the radius it can actually HOLD AT SPEED is
- * larger - once the front tyre is loaded, understeer/slip mean too tight an apex
- * needs more than full steering lock, so the car saturates at the stop, washes
- * wide, and scrubs to a near-stall crawl at the hairpin. The floor is therefore
- * DERIVED, not tuned: the kinematic minimum (WHEELBASE / tan(full wheel angle),
- * the wheel angle being MAX_STEER_RAD scaled by the Ackermann ratio) opened by a
- * fixed dynamic factor that accounts for the understeer/slip the kinematic model
- * ignores. This reproduces the old empirically-tuned ~6 m floor from geometry
- * alone. lap_time() additionally lets fast corners run tighter where downforce
- * holds them (the r_speed term below), so this floor only binds the slow
- * (no-downforce) hairpins.
- *
- * The quasi-steady-state speed model does NOT know any of this on its own: it
- * reads a tight radius as a low corner speed and happily spikes the curvature.
- * lap_time() charges a steep penalty for any segment tighter than this floor, so
- * the optimiser never draws an un-holdable apex. */
-/* Feasibility floor radius, m: the kinematic minimum (WHEELBASE / tan(full wheel
- * angle), the wheel angle being the steering reference g_MAX_STEER_RAD scaled by
- * the Ackermann ratio) opened by g_PP_RADIUS_FACTOR for the understeer/slip the
- * kinematic model ignores. Both inputs are tunable, so this is computed at runtime
- * rather than as a #define. */
+/* Feasibility floor radius, m: kinematic minimum (full lock) opened by
+ * g_PP_RADIUS_FACTOR for the understeer/slip the kinematic model ignores. Both
+ * inputs are tunable, so it is computed at runtime. */
 static float pp_min_radius_m(void)
 {
     float r_kin = WHEELBASE_M / tanf(g_MAX_STEER_RAD * ACK_NOMINAL);
     return g_PP_RADIUS_FACTOR * r_kin;
 }
-/* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
- * floor. Large enough to dominate any real time gain a too-tight apex could
- * offer, so an infeasible radius is always rejected. */
-#define PP_CURV_PENALTY 50.0f
+#define PP_CURV_PENALTY 50.0f /* fake lap-seconds per (1/m) over the floor, big enough to reject infeasible apexes */
 
-/* Coordinate-descent schedule. */
-#define CD_PASSES    60    /* anneal steps                              */
-#define CD_DELTA0    0.60f /* initial offset perturbation, m            */
-#define CD_DELTA_MIN 0.02f /* stop annealing here, m                    */
+#define CD_PASSES    60    /* anneal steps */
+#define CD_DELTA0    0.60f /* initial offset perturbation, m */
+#define CD_DELTA_MIN 0.02f /* stop annealing here, m */
 
 static float rs_px(int i)
 {
@@ -285,7 +199,7 @@ static float rs_py(int i)
     return rs_y[i] + rs_off[i] * rs_ny[i];
 }
 
-/* Discrete curvature at point i of the current (offset) line, 1/m. */
+/* Discrete curvature at point i of the current offset line, 1/m. */
 static float line_curvature(int i, int n)
 {
     int im1  = (i - 1 + n) % n;
@@ -304,20 +218,12 @@ static float line_curvature(int i, int n)
     return 2.0f * crs / (ab * bc * ca);
 }
 
-/* Scratch buffers for the lap-time evaluation (module-static to avoid large
- * stack frames; the solve is single-threaded and runs once). */
-static float lt_ds[MAX_WAYPOINTS]; /* segment length i -> i+1, m       */
-static float lt_v[MAX_WAYPOINTS];  /* speed profile at point i, m/s    */
-static float lt_k[MAX_WAYPOINTS];  /* line curvature at point i, 1/m   */
+static float lt_ds[MAX_WAYPOINTS]; /* segment length i -> i+1, m */
+static float lt_v[MAX_WAYPOINTS];  /* speed profile at point i, m/s */
+static float lt_k[MAX_WAYPOINTS];  /* line curvature at point i, 1/m */
 
-/* Longitudinal accel available at speed v on a segment of curvature k, under the
- * friction circle a_lat^2 + a_lon^2 <= gg(v)^2. The lateral grip already spent
- * cornering (a_lat = v^2*k) eats the circle, so less is left to accelerate or
- * brake - exactly the coupling the on-car planner uses (motion_control.c
- * brake_decel_avail). a_cap bounds it by the powertrain limit (PP_ACCEL_LON for
- * traction-out, PP_BRAKE_LON for braking); floored so the sweep always
- * progresses. Passing the GG budget as speed-dependent (gg(v)) lets the fast
- * corners brake/accelerate harder on their downforce, the whole point of #1. */
+/* Longitudinal accel available at speed v on a segment of curvature k under the
+ * friction circle, capped by the powertrain limit a_cap. */
 static float lon_accel_avail(float v, float k, float a_cap)
 {
     float gg     = peak_lat(v); /* line shaped for the full physical grip */
@@ -325,53 +231,29 @@ static float lon_accel_avail(float v, float k, float a_cap)
     float budget = gg * gg - a_lat * a_lat;
     float a_lon  = (budget > 0.0f) ? sqrtf(budget) : 0.0f;
     if (a_lon > a_cap) a_lon = a_cap;
-    if (a_lon < 0.5f) a_lon = 0.5f;
+    if (a_lon < 0.5f) a_lon = 0.5f; /* floored so the sweep always progresses */
     return a_lon;
 }
 
-/*
- * Lap time of the current offset line under a quasi-steady-state speed model.
- *
- * Three limits combine, exactly as a real lap-time simulator:
- *   - apex cap:  v_i <= sqrt(PP_GRIP_ACCEL / kappa_i)  (lateral grip)
- *   - forward:   v_{i+1} <= sqrt(v_i^2 + 2 a_lon ds_i) (can't accelerate harder)
- *   - backward:  v_i     <= sqrt(v_{i+1}^2 + 2 a_brk ds_i) (must be able to brake)
- * The forward and backward longitudinal budgets are taken under the FRICTION
- * CIRCLE (lon_accel_avail): braking into a corner is limited by the lateral grip
- * already in use, forcing an earlier, harder brake on the straight before a tight
- * apex and rewarding a line that straightens the entry - this is the real
- * combined-grip behaviour the on-car planner drives with, so the line is now
- * scored against the same car model it is driven by (#1).
- *
- * The forward+backward passes around the closed loop make the profile depend on
- * what FOLLOWS each corner - that is what rewards a late apex onto a straight.
- */
+/* Lap time of the current offset line under a quasi-steady-state speed model. */
 static float lap_time(int n)
 {
     int i, lap;
 
-    /* segment lengths + apex (lateral-grip) speed cap, and per-point curvature
-     * cached for the friction-circle longitudinal passes below. */
     for (i = 0; i < n; i++) {
         int j    = (i + 1) % n;
         float dx = rs_px(j) - rs_px(i);
         float dy = rs_py(j) - rs_py(i);
         lt_ds[i] = sqrtf(dx * dx + dy * dy);
 
-        /* Apex speed under SPEED-DEPENDENT grip: downforce adds lateral grip with
-         * v^2, so the fast corners hold more than the flat PP_GRIP_ACCEL alone.
-         * apex_speed() solves v^2*k = PP_GRIP_ACCEL + AERO_GRIP_COEF*v^2 in closed
-         * form. Shaping the line for the real (downforce-aware) grip is the point
-         * of the optimiser - a gripless line gives away the fast corners. */
         float k = line_curvature(i, n);
         lt_k[i] = k;
-        lt_v[i] = apex_speed(PEAK_LAT_FLAT, k, PP_V_MAX);
+        lt_v[i] = apex_speed(PEAK_LAT_FLAT, k, PP_V_MAX); /* downforce-aware apex cap */
     }
 
-    /* Forward (traction-out) and backward (braking) passes under the friction
-     * circle. Two laps of each around the closed loop so the limits propagate
-     * fully past the wrap. The longitudinal budget is evaluated at the segment's
-     * own speed and curvature, so a corner being entered fast brakes earlier. */
+    /* Forward (traction) and backward (braking) passes under the friction
+     * circle. Two laps so limits propagate past the wrap. The forward/backward
+     * coupling is what rewards a late apex onto a straight. */
     for (lap = 0; lap < 2; lap++) {
         for (i = 0; i < n; i++) {
             int j       = (i + 1) % n;
@@ -387,17 +269,6 @@ static float lap_time(int n)
         }
     }
 
-    /* T = Sum ds_i / v_avg over each segment, plus a feasibility penalty for any
-     * point whose radius is below the DYNAMICALLY holdable radius for this car.
-     *
-     * #2: the holdable radius shrinks with speed. The car's grip-limited minimum
-     * radius is r = v^2 / a_lat_max(v): at the apex speed the tyre can hold, a
-     * faster corner (more downforce) can hold a TIGHTER geometric radius. A flat
-     * PP_MIN_RADIUS_M floors every corner at the SLOW-corner (no-downforce) limit,
-     * needlessly opening the fast corners. We floor instead at the radius the car
-     * can actually hold at this point's planned speed, so fast corners may run
-     * tighter (carrying more apex speed) while the hairpin still gets its full
-     * PP_MIN_RADIUS_M opening (no downforce there). */
     float r_floor = pp_min_radius_m();
     float t       = 0.0f;
     for (i = 0; i < n; i++) {
@@ -417,10 +288,9 @@ static float lap_time(int n)
     return t;
 }
 
-/* Seed the offsets with the minimum-curvature line: a [1,-4,6,-4,1]
- * bending-energy Gauss-Seidel relaxation, off_i = -(N_i . S_i)/6, clamped to the
- * corridor. Smooth and feasible, so the lap-time search starts from a sane line
- * and only has to refine it (mainly shifting apexes earlier/later). */
+/* ---- racing line optimisation ---- */
+
+/* Seed the offsets with the minimum-curvature line so the lap-time search starts smooth. */
 static void seed_min_curvature(int n)
 {
     int pass, i;
@@ -447,6 +317,7 @@ static void seed_min_curvature(int n)
     }
 }
 
+/* Coordinate descent on the lap-time objective, refining the seeded line. */
 static void optimize_racing_line(void)
 {
     int pass, i, n = rs_n;
@@ -455,14 +326,8 @@ static void optimize_racing_line(void)
         rs_off[i] = 0.0f;
     if (n < 5) return;
 
-    /* Warm start from the smooth minimum-curvature line. */
     seed_min_curvature(n);
 
-    /* Coordinate descent on the lap-time objective. Each point tries to move
-     * its cross-track offset by +/-delta; the move is kept only if it lowers the
-     * whole-lap time. delta anneals geometrically so the search localises the
-     * apexes coarsely first, then fine-tunes. lap_time() reads the live offsets,
-     * so each accepted move is felt by its neighbours on the next visit. */
     float delta = CD_DELTA0;
     float best  = lap_time(n);
 
@@ -472,8 +337,7 @@ static void optimize_racing_line(void)
             float lim = (1.0f - 2.0f * g_RACING_MARGIN) * rs_h[i];
             float o0  = rs_off[i];
 
-            /* try + then - */
-            for (int s = 0; s < 2; s++) {
+            for (int s = 0; s < 2; s++) { /* try + then - */
                 float cand = o0 + (s == 0 ? delta : -delta);
                 if (cand > lim) cand = lim;
                 if (cand < -lim) cand = -lim;
@@ -490,12 +354,12 @@ static void optimize_racing_line(void)
                 }
             }
         }
-        if (!improved) delta *= 0.5f; /* no gain at this scale -> refine */
+        if (!improved) delta *= 0.5f; /* no gain at this scale, refine */
     }
 }
 
 
-/* Public entry point. */
+/* Public entry point: build the racing line into track->points. */
 void path_plan(Track *track)
 {
     int i;
@@ -511,10 +375,15 @@ void path_plan(Track *track)
         right_y[i] = track->right_cones[i].y;
     }
 
+    // 1. pair left/right cones into gates
     extract_gates(n_left, n_right);
+    // 2. midpoint centreline and half-widths
     build_centreline();
+    // 3. resample to uniform spacing
     resample_centreline();
+    // 4. unit normals for lateral offset
     compute_normals();
+    // 5. coordinate descent on lap time to find the racing line
     optimize_racing_line();
 
     for (i = 0; i < rs_n; i++) {

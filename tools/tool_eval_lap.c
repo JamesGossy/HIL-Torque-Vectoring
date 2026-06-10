@@ -1,10 +1,7 @@
 /*
- * tools/eval_lap.c
- *
- * Headless lap evaluator (a diagnostic tool, not a unit test). Runs the same
- * per-tick loop as main.c as fast as possible and measures how well the car
- * tracks the racing line: cross-track error, cone contacts, lap time. Prints a
- * machine-readable RESULT line for sweeps and CI. Build it with `make eval`.
+ * Headless lap evaluator. Runs the per-tick loop as fast as possible and
+ * measures cross-track error, cone contacts and lap time. Prints a
+ * machine-readable RESULT line for sweeps and CI. Build with `make eval`.
  */
 
 #include <stdio.h>
@@ -21,8 +18,7 @@
 
 #define DT 0.01f
 
-/* nearest distance from (x,y) to the racing-line polyline (point cloud is fine
- * at 2.5 m spacing - we measure to the nearest waypoint segment). */
+/* Nearest distance from (x,y) to the racing-line polyline. */
 static float dist_to_line(const Track *t, float x, float y, int *near_idx)
 {
     float best = 1e18f;
@@ -46,18 +42,8 @@ static float dist_to_line(const Track *t, float x, float y, int *near_idx)
     return sqrtf(best);
 }
 
-/* Off-track / cone-contact test: the car (CG) has hit or crossed a boundary
- * when its CG comes within CONE_CLEARANCE_M of any cone.  This is a physical
- * measure of leaving the track, unlike a raw cross-track number (which reads
- * large at a tight apex even when the car is safely inside the corridor).
- *
- * The IDEAL racing line on this track already passes ~0.34 m from the apex
- * cones (the min-curvature line hugs them with only a 0.15 corridor margin), so
- * a perfectly tracked lap legitimately runs that close.  The clearance is set
- * BELOW that (0.25 m) so the metric flags only when the car is further out than
- * the racing line itself ever is - i.e. it genuinely ran wide onto a cone, not
- * merely clipped an apex the line was always going to graze. */
-#define CONE_CLEARANCE_M 0.25f
+#define CONE_CLEARANCE_M 0.25f /* below the ideal line's ~0.34m apex pass, so only real wides flag */
+/* Returns 1 if the car CG is within CONE_CLEARANCE_M of any cone. */
 static int off_track(const Track *t, float x, float y)
 {
     for (int i = 0; i < t->left_count; i++) {
@@ -71,6 +57,7 @@ static int off_track(const Track *t, float x, float y)
     return 0;
 }
 
+/* Runs one capped lap evaluation and prints the metrics and RESULT line. */
 int main(void)
 {
     Track track;
@@ -78,21 +65,17 @@ int main(void)
     WheelTorques torques = { 0 };
     SensorData sensors   = { 0 };
 
-    /* Apply any TUNE_* env overrides before the racing line / LQR gain are built
-     * (both happen below), so the sweep can vary gains without a recompile. */
-    tunables_init_from_env();
+    tunables_init_from_env(); /* apply TUNE_* overrides before the racing line is built below */
 
     track_init(&track);
 
     float ih = atan2f(track.points[1].y - track.points[0].y, track.points[1].x - track.points[0].x);
     vehicle_model_init(&state, track.points[0].x, track.points[0].y, ih);
 
-    /* Clean controller state for this run (driver + LQR steering + ECU yaw PID). */
     motion_control_reset();
     torque_vectoring_reset();
 
-    /* Precompute per-waypoint path curvature so we can label "sharp corners".
-     * kappa via three-point Menger on +/-2 waypoints. */
+    /* Precompute per-waypoint curvature via three-point Menger on +/-2 waypoints. */
     int n        = track.count;
     float *kappa = malloc(sizeof(float) * n);
     for (int i = 0; i < n; i++) {
@@ -113,7 +96,7 @@ int main(void)
     int trace             = (getenv("TRACE") != NULL);
     int max_ticks         = 5000; /* 50 s cap */
     float worst_cte       = 0.0f;
-    float worst_cte_sharp = 0.0f; /* worst CTE while near a sharp corner (kappa>0.15 => R<6.7m) */
+    float worst_cte_sharp = 0.0f; /* worst CTE near a sharp corner (kappa>0.15) */
     int worst_idx         = -1;
     double sum_cte        = 0.0;
     long cnt              = 0;
@@ -123,7 +106,6 @@ int main(void)
     int moved_away        = 0;
     int offtrack_ticks    = 0;
 
-    /* require the car to actually leave the start before crediting a lap */
     for (int tick = 1; tick <= max_ticks; tick++) {
         float target_speed = 0.0f;
         float dq           = motion_control_update(&state, &track, &target_speed);
@@ -162,9 +144,8 @@ int main(void)
                 tick * DT, ni, kappa[ni], cte, state.velocity, target_speed, state.steering,
                 state.slip_angle);
 
-        /* lap detection */
         float d0 = hypotf(state.x - track.points[0].x, state.y - track.points[0].y);
-        if (d0 > 15.0f) moved_away = 1;
+        if (d0 > 15.0f) moved_away = 1; /* must leave the start before a lap counts */
         if (moved_away && track.lap_count > start_lap && lap_done_tick < 0) lap_done_tick = tick;
     }
 
@@ -185,14 +166,12 @@ int main(void)
     printf("off-track ticks: %d\n", offtrack_ticks);
     printf("final speed: %.1f km/h\n", state.velocity * 3.6f);
 
-    /* Machine-readable summary (one line, stable field order) for sweeps / CI.
-     * lap_s is -1 if no lap completed. */
+    /* Machine-readable summary for sweeps and CI. lap_s is -1 if no lap completed. */
     printf("RESULT mean_cte=%.3f worst_cte=%.3f worst_cte_sharp=%.3f "
            "sharp_viol=%d offtrack=%d laps=%d lap_s=%.2f\n",
         (float)(sum_cte / cnt), worst_cte, worst_cte_sharp, sharp_violations, offtrack_ticks,
         track.lap_count - start_lap, lap_done_tick > 0 ? lap_done_tick * DT : -1.0f);
 
     free(kappa);
-    /* exit 0 always - this is a diagnostic, judged by its printed numbers */
-    return 0;
+    return 0; /* always 0, this is a diagnostic judged by its printed numbers */
 }

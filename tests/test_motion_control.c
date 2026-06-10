@@ -1,9 +1,4 @@
-/*
- * tests/test_motion_control.c
- *
- * Unit tests for motion_control_update().
- * Build and run via:  make test  (from the repo root)
- */
+/* Unit tests for motion_control_update(). Build and run via: make test. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,8 +8,6 @@
 #include "../HIL_Firmware/include/motion_control.h"
 #include "../HIL_Firmware/include/track_parser.h"
 #include "../HIL_Firmware/include/vehicle_model.h"
-
-/* ---- Minimal test framework ---- */
 
 static int g_tests  = 0;
 static int g_passed = 0;
@@ -31,14 +24,7 @@ static int g_passed = 0;
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
-/* ---- Helpers ---- */
-
-/*
- * Build a minimal straight track: a single segment pointing east (+x), with
- * boundary cones at y = ±half_w. Uses a real track_init() layout isn't needed
- * here - we construct the waypoints directly so motion_control has a path to
- * follow without depending on path_planning.
- */
+/* Build a straight east-pointing track with boundary cones at y = +/-half_w. */
 static Track make_straight_track(float length, float half_w)
 {
     Track t;
@@ -68,19 +54,17 @@ static VehicleState make_state(float x, float y, float heading, float speed)
     return s;
 }
 
-/* ---- Tests ---- */
-
-/* on-path car pointing straight ahead must get positive throttle demand */
+/* An on-path car below target speed must get positive throttle. */
 static void test_below_target_speed_gives_throttle(void)
 {
     Track t        = make_straight_track(50.0f, 2.5f);
-    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 5.0f); /* well below TARGET_SPEED_MS */
+    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 5.0f); // well below TARGET_SPEED_MS
 
     float torque = motion_control_update(&s, &t, NULL);
     ASSERT(torque > 0.0f);
 }
 
-/* a car above the target speed should get a braking (negative) demand */
+/* A car above target speed must get a braking demand. */
 static void test_above_target_speed_gives_brake(void)
 {
     Track t        = make_straight_track(50.0f, 2.5f);
@@ -90,17 +74,17 @@ static void test_above_target_speed_gives_brake(void)
     ASSERT(torque < 0.0f);
 }
 
-/* throttle must never exceed DRIVER_TORQUE_NM */
+/* Throttle must never exceed DRIVER_TORQUE_NM. */
 static void test_throttle_clamped(void)
 {
     Track t        = make_straight_track(50.0f, 2.5f);
-    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 0.0f); /* stationary -> max demand */
+    VehicleState s = make_state(0.0f, 0.0f, 0.0f, 0.0f); // stationary, max demand
 
     float torque = motion_control_update(&s, &t, NULL);
     ASSERT(torque <= DRIVER_TORQUE_NM + 0.001f);
 }
 
-/* braking demand must never exceed DRIVER_BRAKE_NM in magnitude */
+/* Braking demand must never exceed DRIVER_BRAKE_NM in magnitude. */
 static void test_brake_clamped(void)
 {
     Track t        = make_straight_track(50.0f, 2.5f);
@@ -110,12 +94,11 @@ static void test_brake_clamped(void)
     ASSERT(torque >= DRIVER_BRAKE_NM - 0.001f);
 }
 
-/* steering must be within ±g_MAX_STEER_RAD */
+/* Steering must stay within +/-g_MAX_STEER_RAD. */
 static void test_steer_clamped(void)
 {
     Track t = make_straight_track(50.0f, 2.5f);
-    /* car offset far to the right so there is a large cross-track error */
-    VehicleState s = make_state(0.0f, -4.0f, 0.0f, 10.0f);
+    VehicleState s = make_state(0.0f, -4.0f, 0.0f, 10.0f); // offset right for large cross-track error
 
     for (int i = 0; i < 20; i++)
         motion_control_update(&s, &t, NULL);
@@ -124,7 +107,7 @@ static void test_steer_clamped(void)
     ASSERT(s.steering >= -g_MAX_STEER_RAD - 0.001f);
 }
 
-/* on-path car pointing straight: steering should remain near zero */
+/* On-path car pointing straight should keep steering near zero. */
 static void test_on_path_small_steer(void)
 {
     Track t        = make_straight_track(50.0f, 2.5f);
@@ -134,7 +117,7 @@ static void test_on_path_small_steer(void)
     ASSERT(fabsf(s.steering) < 0.15f);
 }
 
-/* out_target_speed is written when a non-NULL pointer is passed */
+/* out_target_speed is written when a non-NULL pointer is passed. */
 static void test_out_target_speed_written(void)
 {
     Track t        = make_straight_track(50.0f, 2.5f);
@@ -146,12 +129,11 @@ static void test_out_target_speed_written(void)
     ASSERT(target <= TARGET_SPEED_MS + 0.001f);
 }
 
-/* steering slew: commanded angle must not jump more than one tick's max step */
+/* Commanded steering must not jump more than one tick's max step. */
 static void test_steer_slew_rate(void)
 {
     Track t = make_straight_track(50.0f, 2.5f);
-    /* large lateral offset forces the controller to want maximum steer */
-    VehicleState s = make_state(0.0f, -3.0f, 0.0f, 10.0f);
+    VehicleState s = make_state(0.0f, -3.0f, 0.0f, 10.0f); // large offset forces max steer demand
     float max_step = g_MAX_STEER_RATE_RADS * CONTROL_DT_S;
 
     float prev_steer = s.steering;
@@ -161,8 +143,6 @@ static void test_steer_slew_rate(void)
         prev_steer = s.steering;
     }
 }
-
-/* ---- Entry point ---- */
 
 int main(void)
 {

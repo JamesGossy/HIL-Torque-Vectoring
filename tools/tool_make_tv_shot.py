@@ -1,18 +1,8 @@
 """
-make_tv_shot.py
-
-Captures a still frame for the README straight from the real visualiser: the car
-at the hairpin in follow-cam, next to the same wheel-torque bars the live tool
-draws. No extra labels or arrows are added; it is exactly what the visualiser
-renders, just cropped to the car and the torque panel.
-
-It reuses the visualiser's own drawing code (imported as a module) and replays the
-sim to the hairpin frame, so the torques shown are the real values at that point.
-
-Produces docs/tv_hairpin.png
-
-Usage:
-    python tools/make_tv_shot.py
+Captures a README still from the real visualiser: the car at the hairpin in
+follow-cam next to the wheel-torque bars. Reuses the visualiser drawing code and
+replays the sim to the hairpin frame, so the torques are the real values there.
+Produces docs/tv_hairpin.png. Run with: python tools/tool_make_tv_shot.py
 """
 
 import os
@@ -25,19 +15,17 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, REPO_ROOT)
 
-import visualiser as V   # noqa: E402  (reuse the real drawing code)
+import visualiser as V   # noqa: E402
 
 HIL_SIM_EXE = os.path.join(REPO_ROOT, "HIL_Firmware", "build", "hil_sim")
 if sys.platform == "win32" and not HIL_SIM_EXE.endswith(".exe"):
     HIL_SIM_EXE += ".exe"
 
-# The hairpin: tightest corner of the FSG 2024 lap (max steering). Replay to here.
-HAIRPIN_FRAME = 342
-
-# Tighter follow-cam zoom than the live default, so the car fills the crop.
-FOLLOW_SCALE = 26.0
+HAIRPIN_FRAME = 342  # tightest corner of the FSG 2024 lap, max steering
+FOLLOW_SCALE = 26.0  # tighter zoom than the live default so the car fills the crop
 
 
+# Reads lines from the sim until the terminator, collecting WP/CONE points.
 def read_block(proc, terminator):
     out = []
     while True:
@@ -56,6 +44,7 @@ def read_block(proc, terminator):
                 pass
 
 
+# Replays the sim to the hairpin frame and writes the composed PNG.
 def main():
     if not os.path.isfile(HIL_SIM_EXE):
         print(f"ERROR: {HIL_SIM_EXE} not found. Build with `make` first.")
@@ -84,8 +73,7 @@ def main():
 
     state = V.SimState()
 
-    # Replay STATE lines up to the hairpin frame
-    frame = 0
+    frame = 0  # replay STATE lines up to the hairpin frame
     while frame <= HAIRPIN_FRAME:
         raw = proc.stdout.readline()
         if not raw:
@@ -101,8 +89,7 @@ def main():
         pass
     proc.terminate()
 
-    # --- Draw the track view in follow-cam (exactly like the visualiser) ---
-    canvas.fill(V.BLACK)
+    canvas.fill(V.BLACK)  # draw the track view in follow-cam like the visualiser
     pygame.draw.rect(canvas, V.DARK_GREY, (V.VIEW_X, V.VIEW_Y, V.VIEW_W, V.VIEW_H))
     V.set_follow_transform(state.x, state.y)
     canvas.set_clip(pygame.Rect(V.VIEW_X, V.VIEW_Y, V.VIEW_W, V.VIEW_H))
@@ -112,21 +99,19 @@ def main():
     canvas.set_clip(None)
     V.restore_map_transform()
 
-    # --- Compose the final image: a square car crop on the left, the visualiser's
-    # torque bars on the right, vertically centred, with no added labels/arrows. ---
+    # Compose: square car crop on the left, torque bars on the right, centred.
     CAR = 360                       # square car crop, px
     BARS_BLOCK_W = 2 * 50 + 10      # two 50px bar columns + 10px gap
     BARS_BLOCK_H = 2 * (64 + 26) + 10
     GAP = 36
     MARGIN = 18
     HDR_H = 24
-    HDR_W = 150                     # room for the "WHEEL TORQUES (Nm)" header
+    HDR_W = 150                     # room for the header
 
     out_w = CAR + GAP + max(BARS_BLOCK_W, HDR_W) + MARGIN
     out_h = CAR
 
-    # The follow-cam centres the car in the track viewport; crop a square there.
-    car_cx = V.VIEW_X + V.VIEW_W // 2
+    car_cx = V.VIEW_X + V.VIEW_W // 2  # follow-cam centres the car in the viewport
     car_cy = V.VIEW_Y + V.VIEW_H // 2
     car_crop = pygame.Rect(car_cx - CAR // 2, car_cy - CAR // 2, CAR, CAR)
 

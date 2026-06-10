@@ -1,3 +1,28 @@
+# Code and comment style
+
+## Comments
+- No AI-sounding language. Plain, direct English only.
+- No em dashes anywhere (not in comments, not in strings, not in docs).
+- Default: no comments. Only add one when the WHY is non-obvious — a hidden constraint, a subtle invariant, a workaround for a known bug.
+- Strongly prefer inline comments (`// ...` at end of line) over standalone lines.
+- File top: a short block comment is allowed (2-5 lines max). Describe what the file does and any key design constraint. Not a list of functions.
+- Function top: one short line is allowed if the function is non-obvious. No multi-line docstrings.
+- Logic blocks: one short standalone comment above a new logical stage is allowed (e.g. `// feedforward from curvature`). Keep these to one line.
+- Never describe WHAT the code does. Only WHY it does something non-obvious.
+
+## Section dividers
+- Split long files into named sections with: `/* ---- section name ---- */`
+- Use these in headers too (e.g. `/* ---- steering ---- */`, `/* ---- torque vectoring ---- */`).
+- In long functions, number the main steps: `// 1. project onto line`, `// 2. Stanley feedback`, etc.
+
+## C formatting
+- clang-format, WebKit-based. Run `make format` before committing.
+- Allman braces on functions, attached on control flow.
+- 4-space indent, 100-col line limit.
+- Do not hand-align operands inside expressions — clang-format will normalise it.
+
+---
+
 # Working in this repo
 
 HIL torque-vectoring race-car simulation in C. Three roles kept in separate
@@ -37,11 +62,12 @@ wide.
 
 Every tuning gain is wrapped in `#ifndef` in its defining header, so it can be
 overridden at compile time with `-D` without editing the source. The optimiser
-is `tools/tool_smart_sweep_lqr.py`: an adaptive random→converge search that scores
+is `tools/tool_cmaes_sweep.py`: a CMA-ES search that scores
 each candidate by its **worst ±3% perturbed neighbour**, so it finds a config in
 a clean basin rather than a knife-edge that only laps cleanly at the exact point
 (a naive "fastest clean lap" overfits the deterministic evaluator and goes
-off-track under tiny drift). `tools/tool_robust_check_lqr.py` audits a config's
+off-track under tiny drift). It tunes one or more tracks (`--tracks`, default
+both) and scores by the worst track. `tools/tool_robust_check.py` audits a config's
 robustness. When picking a "fastest" config, only accept one with **0 off-track
 ticks** that also survives perturbation — faster laps that clip apex cones, or
 that are clean only at one point, are not valid.
@@ -114,13 +140,12 @@ These are things that are easy to get wrong and slow to rediscover.
   `fse2024` cleanly** (0 off-track, robust to ±3% jitter), not the fsg2024-only
   optimum. It's a min-max compromise: forcing `fse2024`'s tighter corners clean
   costs `fsg2024` ~0.7 s vs. its solo best (fsg2024 ~27.1 s, fse2024 ~22.1 s).
-  Re-tune the shared set with `tools/tool_smart_sweep_lqr_multi.py` (the
-  multi-track variant of `tool_smart_sweep_lqr.py`: same adaptive search and
-  robust scoring, but it evaluates every candidate on each track in its
-  `TRACKS` list and scores by the worst track). After tuning, always confirm 0
+  Re-tune the shared set with `tools/tool_cmaes_sweep.py` (CMA-ES with robust
+  worst-neighbour scoring; it evaluates every candidate on each track in
+  `--tracks` and scores by the worst track). After tuning, always confirm 0
   off-track on **every** track, e.g. `TRACK=fse2024 make eval` as well as the
-  default. If you only care about one layout, `tool_smart_sweep_lqr.py` still
-  optimises that single track.
+  default. If you only care about one layout, pass a single name, e.g.
+  `tool_cmaes_sweep.py --tracks fsg2024`.
 
 - **Every number in the project lives in exactly one of two files.**
   `shared/vehicle_config.h` holds everything MEASURABLE on the car or DERIVED from
@@ -154,9 +179,13 @@ These are things that are easy to get wrong and slow to rediscover.
   model-based LQR; see the steering note below for the pace trade-off.)
 
 - **Tools live in `tools/`, not `tests/`, and are named `tool_*`**
-  (`tool_eval_lap.c`, `tool_perf_sim.c`, `tool_smart_sweep_lqr.py` /
-  `tool_robust_check_lqr.py`, plus the CI helpers `tool_compare_eval.py` /
-  `tool_eval_common.py`). Unit tests in `tests/` are named `test_*`.
+  (`tool_eval_lap.c`, `tool_perf_sim.c`, `tool_cmaes_sweep.py` /
+  `tool_robust_check.py`, the README-figure scripts `tool_make_plots.py` /
+  `tool_make_track_gif.py` / `tool_make_tv_shot.py`, plus the CI helpers
+  `tool_compare_eval.py` / `tool_eval_common.py`). The **one exception** is
+  `gen_tracks.py`: it is a build-time code generator (YAML → `track_data.h`)
+  wired into the Makefile by that name, not an analysis tool. Unit tests in
+  `tests/` are named `test_*`.
 
 - **The STATE line has 21 fields and yaw rate sits at field 6, before the four
   wheel torques** (fl/fr/rl/rr are fields 7-10). It is very easy to miscount and
@@ -188,10 +217,10 @@ These are things that are easy to get wrong and slow to rediscover.
   (its grip and radius floor are derived, not tuned), so `g_RACING_MARGIN` is the
   line's only knob. Raising `g_GRIP_USE` toward 1 carries more speed but leaves
   the Stanley tracker less margin; re-tune with
-  `tools/tool_smart_sweep_lqr_multi.py` (shared two-track set) or
-  `tool_smart_sweep_lqr.py` (one track) and always confirm 0 off-track with
-  `make eval` on every track. (The sweep tools now inject the five swept tunables
-  via `TUNE_*` env vars on a binary built once — no recompile per candidate.)
+  `tools/tool_cmaes_sweep.py` (shared two-track set by default, or `--tracks
+  fsg2024` for one) and always confirm 0 off-track with `make eval` on every
+  track. (The sweep injects the swept tunables via `TUNE_*` env vars on a binary
+  built once — no recompile per candidate.)
 
 - **The TV controller keeps internal PID state** (static integrator and previous
   error). Call `torque_vectoring_reset()` between independent runs or test cases.

@@ -1,16 +1,6 @@
 /*
- * tests/test_integration.c
- *
- * HIL-loop integration tests. The unit suites cover each block in isolation
- * (vehicle_model, path_planning, torque_vectoring, lqr_steer, the throttle
- * planner); this one exercises the SEAM they meet at - the per-tick wiring that
- * main.c performs: driver -> sensor packing -> ECU -> vehicle -> track. `make
- * eval` exercises the same loop over a full lap, but it judges by printed lap
- * metrics; this pins the wiring invariants directly and cheaply, so a units bug
- * in the sensor bus or a broken reset shows up as a failed assertion rather than
- * a silently worse lap.
- *
- * Build and run via:  make test  (from the repo root)
+ * HIL-loop integration tests. They exercise the per-tick wiring main.c performs:
+ * driver, sensor packing, ECU, vehicle, track. Build and run via: make test.
  */
 
 #include <stdio.h>
@@ -21,8 +11,6 @@
 #include "../HIL_Firmware/include/motion_control.h"
 #include "../shared/tv_interface.h"
 #include "../ECU_Firmware/include/torque_vectoring.h"
-
-/* ---- Minimal test framework ---- */
 
 static int g_tests  = 0;
 static int g_passed = 0;
@@ -41,10 +29,7 @@ static int g_passed = 0;
 
 static const float DT = 0.01f;
 
-/* ---- Shared harness: one full HIL tick, exactly as main.c wires it ---- */
-
-/* Pack the sensor bus from the vehicle state the way main.c does (the conversion
- * from stored motor-shaft RPM to wheel angular speed is part of what we test). */
+/* Pack the sensor bus from the vehicle state the way main.c does. */
 static void pack_sensors(const VehicleState *s, float driver_torque, SensorData *sensors)
 {
     const float RPM_TO_WHEEL_RADS = (2.0f * 3.14159265358979f) / (GEAR_RATIO * 60.0f);
@@ -56,8 +41,7 @@ static void pack_sensors(const VehicleState *s, float driver_torque, SensorData 
         sensors->wheel_speed[i] = s->wheelspeed[i] * RPM_TO_WHEEL_RADS;
 }
 
-/* Advance the full loop one tick (driver -> sensors -> ECU -> vehicle -> track),
- * with TV either on (model split) or off (even split), as main.c does. */
+/* Advance the full loop one tick, with TV on or off, as main.c does. */
 static float step(VehicleState *state, Track *track, int tv_enabled)
 {
     float driver_torque = motion_control_update(state, track, NULL);
@@ -78,8 +62,7 @@ static float step(VehicleState *state, Track *track, int tv_enabled)
     return driver_torque;
 }
 
-/* Init the real FSG track + car at the start line, with clean controller state -
- * the same sequence the sim entry points run. */
+/* Init the real FSG track and car at the start line with clean controller state. */
 static void setup(Track *track, VehicleState *state)
 {
     track_init(track);
@@ -90,17 +73,14 @@ static void setup(Track *track, VehicleState *state)
     torque_vectoring_reset();
 }
 
-/* ---- Tests ---- */
-
-/* The full loop must run for a few seconds on the real track without producing a
- * NaN/Inf in any state the controllers depend on. */
+/* The full loop must run for a few seconds without producing a NaN or Inf. */
 static void test_loop_stays_finite(void)
 {
     Track track;
     VehicleState state;
     setup(&track, &state);
 
-    for (int i = 0; i < 500; i++) { /* 5 s */
+    for (int i = 0; i < 500; i++) {
         step(&state, &track, 1);
         ASSERT(isfinite(state.x) && isfinite(state.y));
         ASSERT(isfinite(state.velocity) && isfinite(state.yaw_rate));
@@ -108,9 +88,7 @@ static void test_loop_stays_finite(void)
     }
 }
 
-/* From a standstill the wired-up car must actually drive: build speed and cover
- * ground. This catches a dead driver->ECU->vehicle path that no single unit test
- * would (each block can be individually correct yet mis-wired). */
+/* From a standstill the wired-up car must build speed and cover ground. */
 static void test_car_drives_from_standstill(void)
 {
     Track track;
@@ -118,17 +96,15 @@ static void test_car_drives_from_standstill(void)
     setup(&track, &state);
 
     float x0 = state.x, y0 = state.y;
-    for (int i = 0; i < 300; i++) /* 3 s */
+    for (int i = 0; i < 300; i++)
         step(&state, &track, 1);
 
-    ASSERT(state.velocity > 3.0f); /* accelerated away from rest */
+    ASSERT(state.velocity > 3.0f); // accelerated away from rest
     float moved = hypotf(state.x - x0, state.y - y0);
-    ASSERT(moved > 5.0f); /* covered real ground */
+    ASSERT(moved > 5.0f); // covered real ground
 }
 
-/* Over a longer run the car must make forward progress along the racing line
- * (the waypoint index advances), confirming the track-update wiring closes the
- * loop. */
+/* Over a longer run the waypoint index must advance, closing the loop. */
 static void test_waypoint_progress(void)
 {
     Track track;
@@ -136,7 +112,7 @@ static void test_waypoint_progress(void)
     setup(&track, &state);
 
     int idx0 = track.current_index;
-    for (int i = 0; i < 1000; i++) /* 10 s */
+    for (int i = 0; i < 1000; i++)
         step(&state, &track, 1);
 
     int laps     = track.lap_count;
@@ -144,19 +120,14 @@ static void test_waypoint_progress(void)
     ASSERT(advanced);
 }
 
-/* Sensor packing: the wheel-speed bus the ECU sees must be the vehicle model's
- * stored motor RPM converted to wheel rad/s by the gear ratio - and on a
- * straight-line launch it should be consistent with forward speed
- * (v ~= wheel_rad_s * WHEEL_RADIUS_M). A wrong gear factor here would silently
- * corrupt the ECU's wheel-speed yaw estimate. */
+/* The wheel-speed bus must convert motor RPM to wheel rad/s and stay consistent with v. */
 static void test_sensor_wheel_speed_units(void)
 {
     Track track;
     VehicleState state;
     setup(&track, &state);
 
-    /* run briefly so the wheels are turning */
-    for (int i = 0; i < 100; i++)
+    for (int i = 0; i < 100; i++) // run briefly so the wheels are turning
         step(&state, &track, 1);
 
     SensorData sensors = { 0 };
@@ -164,21 +135,20 @@ static void test_sensor_wheel_speed_units(void)
 
     for (int i = 0; i < 4; i++) {
         ASSERT(isfinite(sensors.wheel_speed[i]));
-        ASSERT(sensors.wheel_speed[i] > 0.0f); /* moving forward */
+        ASSERT(sensors.wheel_speed[i] > 0.0f); // moving forward
         float v_from_wheel = sensors.wheel_speed[i] * WHEEL_RADIUS_M;
-        ASSERT_NEAR(v_from_wheel, state.velocity, 2.0f); /* same ballpark as v */
+        ASSERT_NEAR(v_from_wheel, state.velocity, 2.0f); // same ballpark as v
     }
 }
 
-/* TV on/off must both keep every wheel torque inside the motor limits, and TV
- * off must be a perfectly even split of the driver demand. */
+/* TV on or off must keep wheel torque in limits, and TV off must be an even split. */
 static void test_tv_on_off_torque_valid(void)
 {
     Track track;
     VehicleState state;
     setup(&track, &state);
     for (int i = 0; i < 200; i++)
-        step(&state, &track, 1); /* into a corner */
+        step(&state, &track, 1); // into a corner
 
     float driver       = motion_control_update(&state, &track, NULL);
     SensorData sensors = { 0 };
@@ -192,15 +162,11 @@ static void test_tv_on_off_torque_valid(void)
         ASSERT(w_on[i] >= MIN_MOTOR_TORQUE_NM - 0.001f);
     }
 
-    /* TV off: even split, sums back to the driver demand */
-    float base = driver * 0.25f;
+    float base = driver * 0.25f; // TV off: even split sums back to driver demand
     ASSERT_NEAR(base * 4.0f, driver, 0.01f);
 }
 
-/* Reset sequencing: two independent runs that reset between them must produce an
- * IDENTICAL trajectory. This is the regression guard for the #1 fix - if a
- * controller's static state leaked across runs (no reset), the second run would
- * diverge from the first. */
+/* Two independent runs that reset between them must produce an identical trajectory. */
 static void test_reset_gives_repeatable_run(void)
 {
     Track t1, t2;
@@ -210,7 +176,7 @@ static void test_reset_gives_repeatable_run(void)
     for (int i = 0; i < 400; i++)
         step(&s1, &t1, 1);
 
-    setup(&t2, &s2); /* setup() resets all controllers */
+    setup(&t2, &s2); // setup() resets all controllers
     for (int i = 0; i < 400; i++)
         step(&s2, &t2, 1);
 
@@ -221,21 +187,17 @@ static void test_reset_gives_repeatable_run(void)
     ASSERT(t1.current_index == t2.current_index);
 }
 
-/* Without a reset, residual static state from a prior run leaks into the next.
- * Run once, then run again WITHOUT resetting and confirm the trajectory differs
- * from the clean reference - i.e. the reset is doing real work, not a no-op. */
+/* Running again without a reset must differ from the clean reference, so reset matters. */
 static void test_missing_reset_leaks_state(void)
 {
     Track tref, tleak;
     VehicleState sref, sleak;
 
-    /* Clean reference run. */
-    setup(&tref, &sref);
+    setup(&tref, &sref); // clean reference run
     for (int i = 0; i < 400; i++)
         step(&sref, &tref, 1);
 
-    /* Prime the controllers with a hard cornering burst, then start a fresh
-     * geometry WITHOUT resetting - the integrators/progress index carry over. */
+    // prime the controllers, then start fresh geometry without resetting
     Track tprime;
     VehicleState sprime;
     setup(&tprime, &sprime);
@@ -245,19 +207,15 @@ static void test_missing_reset_leaks_state(void)
     track_init(&tleak);
     float ih = atan2f(tleak.points[1].y - tleak.points[0].y, tleak.points[1].x - tleak.points[0].x);
     vehicle_model_init(&sleak, tleak.points[0].x, tleak.points[0].y, ih);
-    /* deliberately NO motion_control_reset()/torque_vectoring_reset() */
+    // deliberately no reset here
     for (int i = 0; i < 400; i++)
         step(&sleak, &tleak, 1);
 
-    /* The leaked run should NOT match the clean reference (proves reset matters).
-     * Restore clean state afterwards so the next test is unaffected. */
     float dx = fabsf(sleak.x - sref.x), dy = fabsf(sleak.y - sref.y);
     ASSERT(dx > 1e-4f || dy > 1e-4f);
-    motion_control_reset();
+    motion_control_reset(); // restore clean state for the next test
     torque_vectoring_reset();
 }
-
-/* ---- Entry point ---- */
 
 int main(void)
 {

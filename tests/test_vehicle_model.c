@@ -1,8 +1,6 @@
 /*
- * tests/test_vehicle_model.c
- *
  * Unit tests for vehicle_model_init() and vehicle_model_update().
- * Build and run via:  make test  (from the repo root)
+ * Build and run via: make test.
  */
 
 #include <stdio.h>
@@ -11,8 +9,6 @@
 
 #include "../HIL_Firmware/include/vehicle_model.h"
 #include "../shared/tv_interface.h"
-
-/* ---- Minimal test framework ---- */
 
 static int g_tests  = 0;
 static int g_passed = 0;
@@ -29,8 +25,6 @@ static int g_passed = 0;
 
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
-/* ---- Helpers ---- */
-
 static WheelTorques zero_torques(void)
 {
     WheelTorques t = { 0 };
@@ -43,8 +37,6 @@ static WheelTorques equal_torques(float nm)
     t.fl = t.fr = t.rl = t.rr = nm;
     return t;
 }
-
-/* ---- Tests ---- */
 
 /* init zeroes all motion and places the car at the given pose */
 static void test_init_zeros_state(void)
@@ -94,7 +86,7 @@ static void test_equal_torque_accelerates(void)
 
     ASSERT(s.velocity > v_before);
     ASSERT(s.x > 0.0f);
-    ASSERT_NEAR(s.y, 0.0f, 0.05f); /* straight-ahead, no lateral drift */
+    ASSERT_NEAR(s.y, 0.0f, 0.05f); // no lateral drift
 }
 
 /* speed is clamped to MAX_SPEED_MS regardless of torque magnitude */
@@ -102,7 +94,7 @@ static void test_speed_clamp(void)
 {
     VehicleState s;
     vehicle_model_init(&s, 0.0f, 0.0f, 0.0f);
-    WheelTorques t = equal_torques(200.0f); /* unrealistically large */
+    WheelTorques t = equal_torques(200.0f); // unrealistically large
 
     for (int i = 0; i < 1000; i++)
         vehicle_model_update(&s, &t, 0.01f);
@@ -129,7 +121,7 @@ static void test_left_steer_yaws_left(void)
 {
     VehicleState s;
     vehicle_model_init(&s, 0.0f, 0.0f, 0.0f);
-    s.velocity     = 10.0f; /* pre-seed speed so the tyre forces are active */
+    s.velocity     = 10.0f; // pre-seed speed so the tyre forces are active
     s.steering     = 0.2f;
     WheelTorques t = equal_torques(10.0f);
 
@@ -172,7 +164,7 @@ static void test_braking_decelerates(void)
         vehicle_model_update(&s, &t, 0.01f);
 
     ASSERT(s.velocity < v_before);
-    ASSERT(s.velocity >= 0.0f); /* must not go negative */
+    ASSERT(s.velocity >= 0.0f); // must not go negative
 }
 
 /* wheel speeds must be positive and proportional to forward speed */
@@ -187,8 +179,6 @@ static void test_wheelspeed_positive_at_speed(void)
     for (int i = 0; i < 4; i++)
         ASSERT(s.wheelspeed[i] > 0.0f);
 }
-
-/* ---- Entry point ---- */
 
 int main(void)
 {

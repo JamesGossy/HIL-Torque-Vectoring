@@ -102,7 +102,7 @@ FORMAT_SRCS  := $(filter-out HIL_Firmware/include/track_data.h, $(FORMAT_SRCS))
 
 # Steering is a kinematic feedforward + Stanley law in motion_control.c (the old
 # lqr_steer.c is gone). The four runtime tunables are the in-source defaults in
-# shared/tunables.c (from tools/tool_smart_sweep_lqr.py), so no -D overrides are
+# shared/tunables.c (from tools/tool_cmaes_sweep.py), so no -D overrides are
 # needed for a clean lap.
 HIL_SRCS = HIL_Firmware/src/main.c \
            HIL_Firmware/src/vehicle_model.c \
@@ -201,13 +201,13 @@ test: $(TRACK_DATA) $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(TEST_INT) $(INT_SRCS) -lm && $(TEST_INT)
 
 run: all
-	$(HIL_SIM)
+	TRACK=$(TRACK) $(HIL_SIM)
 
 # Headless lap evaluation: runs the full motion-control -> ECU -> vehicle loop
 # as fast as possible and prints lap-tracking metrics (mean/worst cross-track
 # error, cone contacts, lap time). Use it to catch driver regressions.
 eval: $(TRACK_DATA) $(HIL_BUILD)
-	$(CC) $(HIL_FLAGS) -o $(EVAL) $(EVAL_SRCS) -lm && $(EVAL)
+	$(CC) $(HIL_FLAGS) -o $(EVAL) $(EVAL_SRCS) -lm && TRACK=$(TRACK) $(EVAL)
 
 # Compute-speed benchmark: runs the tick loop flat out for 1 wall-clock second
 # and reports throughput. Pass a different budget as arg 1 (e.g. perf_sim 5).

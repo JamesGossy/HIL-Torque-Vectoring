@@ -22,37 +22,9 @@
 /*
  * main.c
  *
- * The simulation loop. This is where the "Driver", "Car", and "ECU" talk to
- * each other every tick.
- *
- * Each tick (10 ms = 100 Hz):
- *   1. Autopilot (driver)    -> sets steering angle, returns driver torque demand
- *   2. ECU firmware          -> splits driver torque to four wheel torques
- *   3. Vehicle model (car)   -> advances the physics by dt seconds
- *   4. Track                 -> checks if the car has reached the next waypoint
- *   5. State output          -> prints a CSV line to stdout (at 20 Hz)
- *
- * Output protocol:
- *   On startup, this program prints the track waypoints so the visualiser can
- *   draw the track. Then it streams one CSV line per display tick.
- *
- *   Header block (one line per waypoint):
- *     TRACK <count>
- *     WP <x> <y>
- *     WP <x> <y>
- *     ...
- *     END_TRACK
- *
- *   State lines (one per display tick):
- *     STATE <x> <y> <heading> <speed_kmh> <yaw_deg_s> <fl> <fr> <rl> <rr> <tv> <kp> <lap>
- * <elapsed_s> <steering_rad> <slip_angle_rad> <desired_yaw_rad_s> <ax_ms2> <ay_ms2> <vy_ms>
- * <target_speed_kmh>
- *
- *   Commands come in on stdin (one character at a time):
- *     t  -- toggle torque vectoring
- *     [  -- decrease Kp by 5
- *     ]  -- increase Kp by 5
- *     q  -- quit
+ * The simulation loop. The driver, car, and ECU talk to each other each tick.
+ * On startup it prints the track for the visualiser, then streams one CSV
+ * state line per display tick. Single-character commands arrive on stdin.
  */
 
 #define SIM_HZ          100
@@ -61,17 +33,20 @@
 #define TICKS_PER_FRAME (SIM_HZ / DISPLAY_HZ)
 
 
-/* ---- Platform-specific non-blocking stdin read ---- */
+/* ---- platform: raw stdin and timing ---- */
 
 #ifdef _WIN32
 
+// Put stdin into raw non-blocking mode (no-op on Windows).
 static void stdin_setup(void)
-{ /* nothing needed */
+{
 }
+// Restore stdin to its original mode (no-op on Windows).
 static void stdin_restore(void)
-{ /* nothing needed */
+{
 }
 
+// Read one pending stdin byte, or return -1 if none.
 static int poll_stdin(void)
 {
     HANDLE h    = GetStdHandle(STD_INPUT_HANDLE);
@@ -83,6 +58,7 @@ static int poll_stdin(void)
     return -1;
 }
 
+// Sleep for the given milliseconds.
 static void sleep_ms(int ms)
 {
     Sleep(ms);
@@ -92,6 +68,7 @@ static void sleep_ms(int ms)
 
 static struct termios g_old_termios;
 
+// Put stdin into raw non-blocking mode.
 static void stdin_setup(void)
 {
     struct termios raw;
@@ -104,11 +81,13 @@ static void stdin_setup(void)
     fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
 }
 
+// Restore stdin to its original mode.
 static void stdin_restore(void)
 {
     tcsetattr(STDIN_FILENO, TCSANOW, &g_old_termios);
 }
 
+// Read one pending stdin byte, or return -1 if none.
 static int poll_stdin(void)
 {
     unsigned char c;
@@ -116,6 +95,7 @@ static int poll_stdin(void)
     return -1;
 }
 
+// Sleep for the given milliseconds.
 static void sleep_ms(int ms)
 {
     struct timespec ts;
@@ -127,8 +107,7 @@ static void sleep_ms(int ms)
 #endif
 
 
-/* ---- Timing ---- */
-
+// Return a monotonic time in seconds.
 static double get_time_s(void)
 {
 #ifdef _WIN32
@@ -145,8 +124,7 @@ static double get_time_s(void)
 }
 
 
-/* ---- Main ---- */
-
+// Run the driver-ECU-vehicle simulation loop until quit.
 int main(void)
 {
     Track track;
@@ -154,6 +132,7 @@ int main(void)
     WheelTorques torques = { 0 };
     SensorData sensors   = { 0 };
 
+    // load tunables and build the track
     tunables_init_from_env();
 
     track_init(&track);
@@ -163,20 +142,16 @@ int main(void)
         return 1;
     }
 
-    /* Derive initial heading from the direction of the first track segment */
-    float init_dx      = track.points[1].x - track.points[0].x;
+    // place the car at the start, facing the first segment
+    float init_dx      = track.points[1].x - track.points[0].x; // heading from first segment
     float init_dy      = track.points[1].y - track.points[0].y;
     float init_heading = atan2f(init_dy, init_dx);
     vehicle_model_init(&state, track.points[0].x, track.points[0].y, init_heading);
 
-    /* Start every controller from a clean slate (driver progress + throttle
-     * integrator + LQR steering state, and the ECU's yaw PID), so no state
-     * leaks in from a stale static into this run. */
-    motion_control_reset();
+    motion_control_reset();    // clear stale static state from any prior run
     torque_vectoring_reset();
 
-    /* --- Print track data so the visualiser can draw the track and cones --- */
-    printf("TRACK %d\n", track.count);
+    printf("TRACK %d\n", track.count); // print track and cones for the visualiser
     for (int i = 0; i < track.count; i++) {
         printf("WP %.4f %.4f\n", track.points[i].x, track.points[i].y);
     }
@@ -198,6 +173,7 @@ int main(void)
 
     stdin_setup();
 
+    // loop state and pacing clock
     int tv_enabled   = 1;
     float kp_yaw     = g_KP_YAW;
     int tick         = 0;
@@ -215,65 +191,49 @@ int main(void)
         next_tick += DT;
         tick++;
 
-        /* 1. Motion control */
-        float target_speed  = 0.0f;
+        float target_speed  = 0.0f; // motion control
         float driver_torque = motion_control_update(&state, &track, &target_speed);
 
-        /* 2. Pack sensor data */
-        sensors.yaw_rate       = state.yaw_rate;
+        sensors.yaw_rate       = state.yaw_rate; // pack sensor data
         sensors.velocity       = state.velocity;
         sensors.steering_angle = state.steering;
         sensors.driver_torque  = driver_torque;
 
-        /* Real per-corner wheel speeds from the vehicle model.  The model
-         * stores motor-shaft RPM; convert to wheel angular speed (rad/s) for
-         * the sensor bus: wheel_rad/s = motor_RPM / GEAR_RATIO * 2π/60. */
+        // convert motor-shaft RPM to wheel rad/s for the sensor bus
         const float RPM_TO_WHEEL_RADS = (2.0f * 3.14159265358979f) / (GEAR_RATIO * 60.0f);
         sensors.wheel_speed[WHEEL_FL] = state.wheelspeed[WHEEL_FL] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_FR] = state.wheelspeed[WHEEL_FR] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_RL] = state.wheelspeed[WHEEL_RL] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_RR] = state.wheelspeed[WHEEL_RR] * RPM_TO_WHEEL_RADS;
 
-        /* 3. ECU */
-        if (tv_enabled) {
+        if (tv_enabled) { // ECU
             torque_vectoring_update(&sensors, driver_torque, kp_yaw, &torques);
         } else {
-            /* TV off: split the driver's MOTOR-torque demand evenly across the
-             * four motors.  The vehicle model applies GEAR_RATIO itself, so we
-             * must not multiply by it here (that double-counts the ratio). */
-            float base = driver_torque * 0.25f;
+            float base = driver_torque * 0.25f; // even motor split, model applies GEAR_RATIO so do not multiply here
             torques.fl = torques.fr = torques.rl = torques.rr = base;
         }
 
-        /* 4. Vehicle model */
-        vehicle_model_update(&state, &torques, DT);
+        vehicle_model_update(&state, &torques, DT); // advance physics
 
-        /* 5. Track */
-        track_update(&track, state.x, state.y);
+        track_update(&track, state.x, state.y); // check waypoint progress
 
-        /* 6. Print state line at display rate */
-        if (tick % TICKS_PER_FRAME == 0) {
+        if (tick % TICKS_PER_FRAME == 0) { // print state line at display rate
             float elapsed          = (float)(get_time_s() - sim_start);
             float desired_yaw_rate = 0.0f;
             if (state.velocity > 0.5f)
                 desired_yaw_rate = state.velocity * tanf(state.steering) / WHEELBASE_M;
             printf("STATE %.3f %.3f %.4f %.2f %.2f %.1f %.1f %.1f %.1f %d %.1f %d %.1f %.4f %.4f "
                    "%.4f %.3f %.3f %.3f %.2f\n",
-                state.x, state.y, state.heading, state.velocity * 3.6f, /* m/s -> km/h */
-                state.yaw_rate * 57.2958f,                              /* rad/s -> deg/s */
+                state.x, state.y, state.heading, state.velocity * 3.6f, // km/h
+                state.yaw_rate * 57.2958f,                              // deg/s
                 torques.fl, torques.fr, torques.rl, torques.rr, tv_enabled, kp_yaw, track.lap_count,
-                elapsed, state.steering, /* radians */
-                state.slip_angle,        /* radians */
-                desired_yaw_rate,        /* rad/s */
-                state.ax,                /* m/s^2 (for G-G display) */
-                state.ay,                /* m/s^2 (for G-G display) */
-                state.vy,                /* m/s  (lateral velocity) */
-                target_speed * 3.6f);    /* planner target speed, km/h */
+                elapsed, state.steering, state.slip_angle, desired_yaw_rate, state.ax, state.ay,
+                state.vy, target_speed * 3.6f);
             fflush(stdout);
         }
 
-        /* 7. Commands from stdin */
-        int cmd = poll_stdin();
+        int cmd = poll_stdin(); // commands from stdin
+
         if (cmd != -1) {
             switch (cmd) {
             case 't':

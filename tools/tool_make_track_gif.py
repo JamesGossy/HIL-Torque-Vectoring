@@ -1,19 +1,6 @@
-"""
-make_track_gif.py
-
-Renders a looping GIF of the car driving the track: just the left-hand view
-(track surface, blue/yellow cones, cyan racing line, the car, and its trail).
-No data panel. Used for the README header.
-
-It runs hil_sim headless (offscreen pygame surface), captures one frame every
-few sim ticks, then writes an optimised, looping GIF with PIL.
-
-Usage:
-    python tools/make_track_gif.py [output.gif]
-
-Env:
-    TRACK   track layout (default fsg2024), forwarded to hil_sim
-"""
+# Renders a looping GIF of the car driving the track for the README header.
+# Runs hil_sim headless, captures frames, then writes an optimised looping GIF.
+# Usage: python tools/tool_make_track_gif.py [output.gif]. TRACK env picks the layout.
 
 import os
 import sys
@@ -29,12 +16,10 @@ HIL_SIM_EXE = os.path.join(REPO_ROOT, "HIL_Firmware", "build", "hil_sim")
 if sys.platform == "win32" and not HIL_SIM_EXE.endswith(".exe"):
     HIL_SIM_EXE += ".exe"
 
-# ---- Output frame size (square-ish, just the track) ----
 W, H = 900, 720
 MARGIN = 24
 
-# ---- Colours (match the visualiser) ----
-BG = (10, 10, 10)
+BG = (10, 10, 10)  # colours match the visualiser
 VIEW_BG = (26, 26, 26)
 ASPHALT = (45, 45, 45)
 BOUNDARY = (70, 70, 70)
@@ -47,20 +32,16 @@ CAR_FILL = (255, 80, 80)
 CAR_OUTLINE = (255, 180, 180)
 TRAIL_COL = (60, 200, 60)
 
-# ---- GIF capture settings ----
-# hil_sim streams STATE lines at 20 Hz (one line every 0.05 s of sim time).
-# Capturing every line and playing back at 20 fps makes the GIF run in real
-# time: a ~27 s lap plays in ~27 s, smoothly, with no skipped motion.
-CAPTURE_EVERY = 1
+CAPTURE_EVERY = 1  # state lines stream at 20 Hz, so capturing all and playing at 20 fps is real time
 GIF_FPS = 20
 TRAIL_LEN = 70
 
-# ---- Coordinate transform (fit whole track) ----
 _scale = 1.0
 _off_x = 0.0
 _off_y = 0.0
 
 
+# Compute the scale and offset that fit the whole track into the view.
 def fit_bounds(pts):
     global _scale, _off_x, _off_y
     xs = [p[0] for p in pts]
@@ -78,14 +59,15 @@ def fit_bounds(pts):
     _off_y = MARGIN + (vh - used_h) / 2.0 - min_y * _scale
 
 
+# Convert world coordinates to screen pixels.
 def w2s(wx, wy):
     sx = _off_x + wx * _scale
     sy = H - (_off_y + wy * _scale)   # flip y
     return (int(sx), int(sy))
 
 
+# Read CONE/WP lines until a terminator line and return list of (x, y).
 def read_block(proc, terminator):
-    """Read CONE/WP lines until a terminator line; return list of (x, y)."""
     out = []
     while True:
         raw = proc.stdout.readline()
@@ -103,6 +85,7 @@ def read_block(proc, terminator):
                 pass
 
 
+# Draw the car as a rotated rectangle at the given pose.
 def draw_car(surf, x, y, heading):
     sx, sy = w2s(x, y)
     half_l = max(3, int(1.4 * _scale))
@@ -119,6 +102,7 @@ def draw_car(surf, x, y, heading):
     pygame.draw.polygon(surf, CAR_OUTLINE, ipts, 2)
 
 
+# Run the sim, capture frames, and write the looping GIF.
 def main():
     out_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO_ROOT, "docs", "track.gif")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -140,8 +124,7 @@ def main():
 
     fit_bounds(waypoints + left + right)
 
-    # Pre-compute static screen geometry
-    wp_s = [w2s(*p) for p in waypoints]
+    wp_s = [w2s(*p) for p in waypoints]  # pre-compute static screen geometry
     left_s = [w2s(*p) for p in left]
     right_s = [w2s(*p) for p in right]
     cone_r = max(4, int(0.22 * _scale))
@@ -166,8 +149,7 @@ def main():
             pygame.draw.circle(surf, CONE_YELLOW, pt, cone_r)
             pygame.draw.circle(surf, CONE_YELLOW_EDGE, pt, cone_r, 1)
 
-    # Cache the static background once (cones/line/asphalt never move)
-    background = pygame.Surface((W, H))
+    background = pygame.Surface((W, H))  # cache the static background once
     draw_static(background)
 
     frames = []
@@ -207,8 +189,7 @@ def main():
             raw_str = pygame.image.tostring(surf, "RGB")
             frames.append(Image.frombytes("RGB", (W, H), raw_str))
 
-        # Stop once one full lap is captured (clean loop), or safety cap
-        if lap >= start_lap + 1:
+        if lap >= start_lap + 1:  # stop after one full lap for a clean loop, or safety cap
             first_lap_done = True
             break
         if tick > 20000:
@@ -226,16 +207,13 @@ def main():
         print("ERROR: no frames captured")
         sys.exit(1)
 
-    # Downscale to keep the GIF small, and write a looping animation
-    target_w = 480
+    target_w = 480  # downscale to keep the GIF small
     if frames[0].width > target_w:
         ratio = target_w / frames[0].width
         new_size = (target_w, int(frames[0].height * ratio))
         frames = [f.resize(new_size, Image.LANCZOS) for f in frames]
 
-    # Quantise every frame against ONE shared palette derived from the first
-    # frame, so inter-frame GIF delta compression stays small (per-frame adaptive
-    # palettes change colours slightly each frame and bloat the file).
+    # one shared palette keeps delta compression small, per-frame palettes bloat the file
     base_pal = frames[0].convert("P", palette=Image.ADAPTIVE, colors=64)
     pal_frames = [f.quantize(palette=base_pal, dither=Image.NONE) for f in frames]
     duration_ms = int(1000 / GIF_FPS)
@@ -246,12 +224,7 @@ def main():
         duration=duration_ms,
         loop=0,
         optimize=True,
-        # disposal=2 clears each frame back to the background before drawing the
-        # next, which is required because the trail's tail moves and would
-        # otherwise smear into a permanent streak. Pillow's optimize still only
-        # stores the changed bounding box, so the per-frame cost is the car-plus-
-        # trail region, not the whole image.
-        disposal=2,
+        disposal=2,  # clear each frame first or the moving trail tail smears into a streak
     )
 
     size_kb = os.path.getsize(out_path) / 1024

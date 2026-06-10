@@ -1,12 +1,5 @@
 /*
- * tests/test_tv.c
- *
- * Unit tests for torque_vectoring_update().
- *
- * Build and run via:   make test   (from the repo root)
- *
- * Each test_ function calls ASSERT() on a condition.  Any failure prints the
- * file/line and exits with a non-zero code so the build system can detect it.
+ * Unit tests for torque_vectoring_update(). Build and run with: make test.
  */
 
 #include <stdio.h>
@@ -15,8 +8,6 @@
 
 #include "../shared/tv_interface.h"
 #include "../ECU_Firmware/include/torque_vectoring.h"
-
-/* ---- Minimal test framework ---- */
 
 static int g_tests  = 0;
 static int g_passed = 0;
@@ -34,16 +25,14 @@ static int g_passed = 0;
 #define ASSERT_NEAR(a, b, tol) ASSERT(fabsf((float)(a) - (float)(b)) <= (float)(tol))
 
 
-/* ---- Helper: build a straight-ahead SensorData at given speed ---- */
-
+// Build a straight-ahead SensorData at the given speed.
 static SensorData straight(float speed)
 {
     SensorData s     = { 0 };
     s.velocity       = speed;
     s.steering_angle = 0.0f;
     s.yaw_rate       = 0.0f;
-    /* wheel speeds: all equal for straight line (no differential) */
-    float w                 = (speed > 0.0f) ? speed / 0.254f : 0.0f; /* v / wheel_radius */
+    float w                 = (speed > 0.0f) ? speed / 0.254f : 0.0f; // v / wheel_radius
     s.wheel_speed[WHEEL_FL] = w;
     s.wheel_speed[WHEEL_FR] = w;
     s.wheel_speed[WHEEL_RL] = w;
@@ -52,65 +41,45 @@ static SensorData straight(float speed)
 }
 
 
-/* ---- Tests ---- */
-
-/*
- * Zero yaw error on a straight at speed -> no left/right differential and the
- * driver's total torque is delivered. The grip-aware bleed distributor splits
- * each side front/rear by that corner's grip ceiling (not a flat /4), so with
- * zero bias the LEFT total equals the RIGHT total and the four wheels sum to the
- * demand - that is the "even split" invariant now, not equal per-wheel torque.
- */
+// Zero yaw error on a straight gives equal left/right totals and delivers the full demand.
 static void test_zero_error_even_split(void)
 {
     SensorData s = straight(10.0f);
     WheelTorques t;
-    float total = 40.0f; /* any positive value */
+    float total = 40.0f;
     torque_vectoring_update(&s, total, g_KP_YAW, &t);
 
-    /* No yaw demand -> left side == right side (no differential). */
     ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);
-    /* Total torque delivered (within grip; well under the ceiling here). */
     ASSERT_NEAR(t.fl + t.fr + t.rl + t.rr, total, 0.5f);
 }
 
-/*
- * When speed < 0.5 m/s, desired_yaw_rate is set to zero regardless of steer,
- * so there is no yaw error and there is no left/right differential.
- */
+// Below 0.5 m/s the desired yaw rate is zero, so there is no differential.
 static void test_low_speed_no_yaw_demand(void)
 {
     SensorData s     = { 0 };
     s.velocity       = 0.1f;
-    s.steering_angle = 0.5f; /* large steer - should produce no demand */
+    s.steering_angle = 0.5f;
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, g_KP_YAW, &t);
 
-    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f); /* no differential */
+    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);
 }
 
-/*
- * Left turn (positive steering), positive yaw error -> right wheels get more
- * torque than left wheels (outer side).
- */
+// A left turn biases the right (outer) wheels.
 static void test_left_turn_biases_right_wheels(void)
 {
     SensorData s     = straight(10.0f);
-    s.steering_angle = 0.3f; /* turning left */
-    s.yaw_rate       = 0.0f; /* not rotating yet -> large positive error */
+    s.steering_angle = 0.3f;
+    s.yaw_rate       = 0.0f;
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, g_KP_YAW, &t);
 
-    ASSERT(t.fr > t.fl); /* right (outer) > left (inner) */
+    ASSERT(t.fr > t.fl);
     ASSERT(t.rr > t.rl);
-    /* The yaw moment is realised as a left/right differential: the right
-     * (outer) side carries more total torque than the left (inner) side. */
-    ASSERT((t.fr + t.rr) > (t.fl + t.rl));
+    ASSERT((t.fr + t.rr) > (t.fl + t.rl)); // outer side carries more total
 }
 
-/*
- * Right turn (negative steering) -> left wheels get more torque.
- */
+// A right turn biases the left wheels.
 static void test_right_turn_biases_left_wheels(void)
 {
     SensorData s     = straight(10.0f);
@@ -123,9 +92,7 @@ static void test_right_turn_biases_left_wheels(void)
     ASSERT(t.rl > t.rr);
 }
 
-/*
- * The output must be symmetric: mirror the steer sign -> mirror the bias.
- */
+// Output is symmetric: mirroring the steer sign mirrors the bias.
 static void test_symmetry(void)
 {
     SensorData sL     = straight(12.0f);
@@ -145,37 +112,31 @@ static void test_symmetry(void)
     ASSERT_NEAR(tL.rr, tR.rl, 0.01f);
 }
 
-/*
- * Deadband: a yaw error smaller than TV_YAW_DEADBAND produces an even split.
- */
+// A yaw error inside the deadband produces an even split.
 static void test_deadband(void)
 {
     SensorData s     = { 0 };
     s.velocity       = 10.0f;
     s.steering_angle = 0.0f;
-    /* Inject a tiny yaw rate error just inside the deadband */
-    float desired = 10.0f * tanf(0.0f) / 1.55f;           /* = 0 for steer = 0 */
-    s.yaw_rate    = desired + (g_TV_YAW_DEADBAND * 0.5f); /* error = -half_band */
+    float desired = 10.0f * tanf(0.0f) / 1.55f;           // = 0 for steer = 0
+    s.yaw_rate    = desired + (g_TV_YAW_DEADBAND * 0.5f);  // error inside the band
     for (int i = 0; i < 4; i++)
         s.wheel_speed[i] = 10.0f / 0.254f;
 
     WheelTorques t;
     torque_vectoring_update(&s, 40.0f, g_KP_YAW, &t);
 
-    /* Error inside the deadband -> zero bias -> no left/right differential. */
     ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);
 }
 
-/*
- * Output clamp: even with a huge error the torques must not exceed the motor limits.
- */
+// A huge error must not push any wheel above the motor limit.
 static void test_clamp_upper(void)
 {
     SensorData s     = straight(5.0f);
     s.steering_angle = 0.6f;
-    s.yaw_rate       = -5.0f; /* extreme understeer -> huge positive error */
+    s.yaw_rate       = -5.0f; // extreme understeer error
     WheelTorques t;
-    torque_vectoring_update(&s, 200.0f, 500.0f, &t); /* absurd gain */
+    torque_vectoring_update(&s, 200.0f, 500.0f, &t); // absurd gain
 
     ASSERT(t.fl <= MAX_MOTOR_TORQUE_NM + 0.001f);
     ASSERT(t.fr <= MAX_MOTOR_TORQUE_NM + 0.001f);
@@ -183,11 +144,12 @@ static void test_clamp_upper(void)
     ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f);
 }
 
+// A huge negative error must not push any wheel below the motor limit.
 static void test_clamp_lower(void)
 {
     SensorData s     = straight(5.0f);
     s.steering_angle = -0.6f;
-    s.yaw_rate       = 5.0f; /* extreme oversteer -> huge negative error */
+    s.yaw_rate       = 5.0f; // extreme oversteer error
     WheelTorques t;
     torque_vectoring_update(&s, 200.0f, 500.0f, &t);
 
@@ -197,10 +159,7 @@ static void test_clamp_lower(void)
     ASSERT(t.rr >= MIN_MOTOR_TORQUE_NM - 0.001f);
 }
 
-/*
- * Gain = 0 disables the yaw moment, so there is no left/right differential
- * regardless of yaw error, and the driver's total torque is delivered.
- */
+// Gain 0 disables the yaw moment, so there is no differential and the full total is delivered.
 static void test_zero_gain(void)
 {
     SensorData s     = straight(15.0f);
@@ -209,77 +168,52 @@ static void test_zero_gain(void)
     WheelTorques t;
     torque_vectoring_update(&s, 60.0f, 0.0f, &t);
 
-    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);        /* no differential */
-    ASSERT_NEAR(t.fl + t.fr + t.rl + t.rr, 60.0f, 0.5f); /* total delivered */
+    ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);
+    ASSERT_NEAR(t.fl + t.fr + t.rl + t.rr, 60.0f, 0.5f);
 }
 
-/*
- * Speed-dependent gain: at high speed the effective Kp is lower, so the bias
- * is smaller than at the reference speed with the same yaw error.
- *
- * This must be checked in the UNSATURATED regime, or both cases just clamp at
- * max_bias and read equal. A small yaw error and a small explicit gain keep both
- * points linear, so the test isolates the speed scaling itself rather than the
- * shipped KP_YAW_DEFAULT (which is large enough to saturate at these speeds).
- */
+// Higher speed lowers the effective gain, so the bias is smaller for the same yaw error.
 static void test_speed_gain_scaling(void)
 {
-    /* No steering so desired_yaw_rate=0; error comes purely from yaw_rate offset.
-     * Equal wheel speeds mean r_wheels=0, so yaw_rate_est = 0.75 * yaw_rate.
-     * A tiny yaw_rate = -0.1 gives yaw_error = +0.075 (just past the deadband),
-     * small enough that neither speed saturates the bias clamp. */
+    // Tiny yaw error and small gain keep both speeds in the linear, unsaturated regime.
     SensorData sLow  = straight(6.0f);
     SensorData sHigh = straight(24.0f);
     sLow.yaw_rate    = -0.1f;
     sHigh.yaw_rate   = -0.1f;
 
-    const float kp = 5.0f; /* small gain: keep both cases below max_bias */
+    const float kp = 5.0f; // small gain keeps both cases below max_bias
     WheelTorques tLow, tHigh;
     torque_vectoring_reset();
     torque_vectoring_update(&sLow, 40.0f, kp, &tLow);
     torque_vectoring_reset();
     torque_vectoring_update(&sHigh, 40.0f, kp, &tHigh);
 
-    /* At low speed effective_kp = kp*(12/6)=2*kp; at high = kp*(12/24)=0.5*kp,
-     * so the low-speed bias must be the larger (neither clamped). */
     float bias_low  = tLow.fr - tLow.fl;
     float bias_high = tHigh.fr - tHigh.fl;
     ASSERT(bias_low > bias_high);
 }
 
 
-/*
- * Grip-aware differential under saturation: with an extreme bias the moment is
- * carried as a left/right differential equal to the (clamped) commanded bias,
- * bled off the grip ceilings rather than collapsed by a symmetric motor clip.
- * The outer (right) side carries more than the inner (left), and the realised
- * differential matches max_bias (the bias clamp in step 5).
- */
+// Under saturation the moment is held as a left/right differential equal to the clamped bias.
 static void test_saturation_preserves_differential(void)
 {
     SensorData s     = straight(8.0f);
     s.steering_angle = 0.5f;
-    s.yaw_rate       = -3.0f; /* large positive (understeer) error */
+    s.yaw_rate       = -3.0f; // large positive (understeer) error
     WheelTorques t;
-    torque_vectoring_update(&s, 104.0f, 300.0f, &t); /* large demand + saturating bias */
+    torque_vectoring_update(&s, 104.0f, 300.0f, &t); // large demand, saturating bias
 
     float left     = t.fl + t.rl;
     float right    = t.fr + t.rr;
     float max_bias = MAX_MOTOR_TORQUE_NM * 0.5f;
-    ASSERT(right > left); /* outer side carries more */
-    /* Differential realised as the clamped bias (not collapsed by clipping). */
-    ASSERT_NEAR(right - left, max_bias, 0.5f);
-    ASSERT(t.fr <= MAX_MOTOR_TORQUE_NM + 0.001f); /* every wheel within peak */
+    ASSERT(right > left);
+    ASSERT_NEAR(right - left, max_bias, 0.5f); // differential not collapsed by clipping
+    ASSERT(t.fr <= MAX_MOTOR_TORQUE_NM + 0.001f);
     ASSERT(t.rr <= MAX_MOTOR_TORQUE_NM + 0.001f);
 }
 
 
-/* ---- Entry point ---- */
-
-/* Run one test with a clean controller state.  The TV controller keeps internal
- * PID state across calls (correct for the continuous HIL loop, but it would let
- * one test case's residual integrator/derivative memory leak into the next), so
- * we reset between cases for isolation. */
+// Run one test after resetting the controller's internal PID state for isolation.
 #define RUN(fn)                                                                                    \
     do {                                                                                           \
         torque_vectoring_reset();                                                                  \

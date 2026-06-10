@@ -162,26 +162,27 @@ straights:
 <img src="docs/speed_trace.png" alt="Actual speed tracking the planned target speed over one lap" width="680">
 </div>
 
-### 4. Steering, with an LQR controller
+### 4. Steering
 
-This is the clever part. At every moment the controller knows two things that are
-wrong:
+At every moment the controller knows two things that are wrong:
 
 - **how far the car is sideways off the line** (cross-track error),
 - **how much the car is pointing the wrong way** (heading error).
 
-An **LQR** (Linear-Quadratic Regulator) is a controller that works out the single
-best steering angle to drive both of those to zero with the least wasted effort,
-using a model of how steering changes them. Because the car handles differently at
-low and high speed, the controller updates itself as the speed changes. On top of
-that it adds two helpers:
+The steering is a **Stanley** law plus a curvature feedforward. It adds up four
+simple terms into one steering angle:
 
-- a **feedforward** term that starts turning the wheel for the corner it can already
-  see, instead of waiting for an error to show up, and
-- a small term that wipes out any tiny offset that lingers.
+- a **feedforward** that starts turning the wheel for the corner it can already see,
+  worked out from the corner radius and the car's understeer, so it does not wait
+  for an error to show up,
+- a **heading** term that lines the car up with the path,
+- a **cross-track** term that pulls the car back onto the line,
+- a **yaw-rate damping** term that stops the car rotating faster or slower than the
+  corner needs, which is what keeps it from washing wide at speed.
 
-The result is that the car stays within about **9 centimetres** of the ideal line
-the whole way round.
+The feedforward understeer comes straight from the tyre model, so it needs no tuning.
+The whole law has one knob, the cross-track gain. The car stays within about
+**16 centimetres** of the ideal line the whole way round, with no off-track ticks.
 
 ### 5. Torque vectoring, the control unit's job
 
@@ -195,9 +196,7 @@ speed:
 The speed-squared part is honest about the fact that a fast car cannot rotate as
 sharply as the steering angle alone suggests.
 
-**b. Work out how fast it really is rotating.** Use two sources and blend them: the
-gyro sensor, and a second guess from the fact that the outer wheels spin faster than
-the inner ones in a corner. Two readings are safer than one.
+**b. Work out how fast it really is rotating.** Read the yaw-rate gyro.
 
 **c. Get ahead of the corner.** The moment the steering moves, start shifting torque
 outward. Do not wait for an error to build up. This is the single biggest reason the
@@ -207,18 +206,23 @@ cornering is clean.
 
 > **bias = feedforward + (Kp times error) + (Ki times the build-up of error) + (Kd times how fast the error is changing)**
 
-- **Kp** reacts to the error right now. It is reduced at high speed to stay calm.
+- **Kp** reacts to the error right now.
 - **Ki** removes a small error that never quite goes away.
 - **Kd** softens the turn-in so the car does not overshoot.
 
-**e. Split it four ways.** The base torque is shared equally. The vectoring part is
-split front and rear, with more given to the rear, because the rear tyres are doing
-less steering work and so have more grip to spare.
+That gives the wanted left-right torque difference, the bias.
 
-**f. Stay within what the motors can do.** Each wheel is limited to what its motor can
-deliver (up to 29.4 Nm driving, down to 100 Nm of braking). If the outer wheel hits
-its limit, the leftover is pushed onto the inner wheel so the turning effect is kept
-as much as the motors allow.
+**e. Split it four ways, by grip.** The controller estimates how much torque each
+wheel's tyre can take right now, from the load on it. A loaded outer tyre can take
+more, an unloaded inner one less. It then shares out the driver's torque to hit the
+bias first and the total second, starting from those per-wheel grip ceilings. So the
+turning effect goes to the tyres that can actually deliver it, and authority shifts
+to the loaded outer and rear corners on its own.
+
+**f. Stay within what the motors can do.** Each wheel is capped at what its motor can
+deliver, up to 29.4 Nm driving and the same in regen braking. If a wheel hits its
+limit, the leftover is pushed onto the other wheels so the turning effect is kept as
+much as the motors allow.
 
 One nice detail: this works while braking too. The car has no brake discs. It slows by
 running the motors backwards. The same left and right split is used while braking, so
@@ -237,6 +241,11 @@ freedoms (forward, sideways, and rotation), worked out for each wheel:
   outside, and that changes how much grip each wheel has.
 - **A grip limit per wheel.** A wheel cannot do its hardest cornering and its hardest
   acceleration at the same time. Spend grip on one and there is less for the other.
+
+There is one grip number for the whole project, derived from the tyre and the
+downforce. The same number sets the corner speed, the braking budget, and the point
+where the throttle backs off under cornering load. Change the tyre and all three move
+together, because there is only one place to change.
 
 The numbers match a real Formula Student car (the M25): 260 kg, 1.55 m wheelbase, four
 29.4 Nm motors through a 15.47 to 1 gearbox.
@@ -278,8 +287,8 @@ go equal while the lap time gets worse. Press `]` to turn the gain up high and w
 the car get twitchy.
 
 The header GIF, the hairpin shot, and the plots above are all made from real sim
-data with `python tools/make_track_gif.py`, `python tools/make_tv_shot.py`, and
-`python tools/make_plots.py`.
+data with `python tools/tool_make_track_gif.py`, `python tools/tool_make_tv_shot.py`,
+and `python tools/tool_make_plots.py`.
 
 ---
 
@@ -298,7 +307,7 @@ track, finishes the lap, and does not make the lap slower or the line worse. The
 two commands run in CI on every push, and the build fails if the car cannot get round.
 So a control mistake cannot slip in without someone noticing.
 
-The control gains are found by `tools/tool_smart_sweep_lqr.py`. It scores each setup by
+The control gains are found by `tools/tool_cmaes_sweep.py`. It scores each setup by
 its **worst nearby neighbour**, not its best case, which throws away setups that only
 work at one exact point and fall apart the moment anything drifts. The shipped gains
 drive two different tracks cleanly and survive a 3 percent wobble on every parameter.
@@ -315,14 +324,14 @@ HIL-Torque-Vectoring/
   shared/                     Code that BOTH the car and the control unit can use
     tv_interface.h            The data that crosses the HIL wall
     vehicle_config.h          Physical constants (mass, size, tyres)
-    parameters_config.h       Tunable settings (speed budget, TV gains)
+    grip_model.h              The one grip number, derived from the tyre and aero
+    tunables.c / tunables.h   The control gains (steering, speed, TV)
 
   HIL_Firmware/               The car side, the simulation
     src/main.c                The 100 Hz loop. Sends data out.
     src/vehicle_model.c       The per-wheel physics
     src/path_planning.c       Builds the racing line from the cones
     src/motion_control.c      The virtual driver (steering and speed)
-    src/lqr_steer.c           The LQR steering law
     src/track_parser.c        Loads a cone layout, chosen at runtime
 
   ECU_Firmware/               The control side. Only sees sensor data.
