@@ -68,16 +68,32 @@ caught automatically.
 
 ## Build note (Windows)
 
-The Makefile sets `export TMPDIR := /tmp`, which works in a real MSYS2 MinGW
-shell. If you build from a sandboxed shell where `/tmp` is not writable, pass a
-writable temp explicitly, e.g. `make TMPDIR=C:/msys64/tmp` with
-`TMPDIR/TMP/TEMP` set to the same path in the environment. CI runs on Ubuntu
-where this is a non-issue.
+**Root cause of the recurring "gcc fails with exit 1 and no error message".**
+MinGW gcc writes cc1/as intermediates to a temp dir, and on this machine two
+things conspired:
+- gcc honours the **Windows-style `TMP`/`TEMP`, not the POSIX `TMPDIR`**, so the
+  old `export TMPDIR := /tmp` was silently ignored and temps landed in `%TEMP%`
+  under the user profile.
+- This repo is under **OneDrive**, and `%TEMP%` is heavily scanned by Defender/
+  OneDrive. The scanner races `as` reading cc1's temp `.s`, so the assemble step
+  intermittently fails to open its own temp and the build dies with **no
+  diagnostic and a bogus exit 1** (the output file sometimes still appears —
+  proof the failure is in the temp/exit-status path, not the code).
 
-`make` may fail to set the temp even with the flag because shell state does not
-persist between commands. The reliable fallback is to invoke gcc directly with
-the source list from the Makefile and the env set inline on the same line:
-`TMPDIR=/c/msys64/tmp TMP=/c/msys64/tmp TEMP=/c/msys64/tmp gcc -std=c11 -O2 -I ... -lm`.
+The Makefile now fixes this: it points `TMPDIR` **and** `TMP`/`TEMP` at a fixed,
+local, non-synced dir (`C:\mk_tmp`, auto-created) so cc1/as temps never touch
+OneDrive or `%TEMP%`. Just run `make` / `make eval` / `make test` normally.
+Override the dir with `make BUILD_TMP=/c/other/tmp` if `C:` is not writable. CI
+runs on Ubuntu where none of this applies.
+
+If you must invoke gcc by hand outside make, set the **Windows-style** temp (not
+just `TMPDIR`) on the same line, e.g.
+`TMP='C:/mk_tmp' TEMP='C:/mk_tmp' gcc -std=c11 -O2 -I ... -lm`.
+
+Note: independent of the above, the sandboxed shell can enter a degraded state
+mid-session where gcc cannot spawn its subprocesses at all (even `gcc -S` of a
+one-line file fails, while `cc1 --version` and `as --version` run fine). That is
+an environment condition, not a repo problem — start a fresh shell/session.
 
 ## Key facts and gotchas
 
@@ -106,15 +122,36 @@ These are things that are easy to get wrong and slow to rediscover.
   default. If you only care about one layout, `tool_smart_sweep_lqr.py` still
   optimises that single track.
 
-- **Most tunable parameters live in `shared/parameters_config.h`** (speed
-  budget, throttle/brake, TV gains, cone safety net). Two sets live with the code
-  they belong to: the **LQR steering cost weights** (`LQR_Q_*`, `LQR_R`,
-  `LQR_KI`, `LQR_I_MAX`) in `HIL_Firmware/src/lqr_steer.c`, and the **racing-line
-  shape** (`RACING_MARGIN`, `PP_GRIP_ACCEL`, `PP_MIN_RADIUS_M`) in
-  `HIL_Firmware/src/path_planning.c`. The car's physical constants (mass,
-  geometry, tyre coefficients) are separate again, in `shared/vehicle_config.h`.
-  The highest-leverage gains everywhere are `#ifndef`-wrapped so
-  `tools/tool_smart_sweep_lqr.py` and `-D` overrides work.
+- **Every number in the project lives in exactly one of two files.**
+  `shared/vehicle_config.h` holds everything MEASURABLE on the car or DERIVED from
+  it — mass, geometry, tyre/aero coefficients, motor torque limits, top speed,
+  gear ratio, the 100 Hz control period, the planner's structural array CAPS, and
+  derived quantities (`ACK_NOMINAL` = mid of the Ackermann ratios, `DRIVER_TORQUE_NM`
+  = `N_MOTORS × MAX_MOTOR_TORQUE_NM`). `shared/tunables.c` holds every controller
+  GAIN as a `g_*` global (there is no `shared/constants_config.h` — it was deleted
+  and split between these two files). The classification rule is **"is its value a
+  performance/behaviour CHOICE?"** — if tuning it trades lap time, stability or
+  cleanliness, it is a gain and lives in `tunables.c` with a `TUNE_*` env override
+  and a slot in the sweep's `PARAMS`. That deliberately includes the steering caps
+  (`g_MAX_STEER_RAD`/`g_MAX_STEER_RATE_RADS` — the sim enforces no mechanical lock,
+  so they are driver choices), the braking-effort cap (`g_MAX_BRAKE_DECEL_MS2`, a
+  choice below the regen limit), the longitudinal P/I gains, the speed-planner scan
+  DEPTH (`g_SPEED_PLAN_STEPS`/`g_NEAREST_SEARCH_*`, ints clamped to the structural
+  caps), the cone safety net, the racing-line radius-floor opening
+  (`g_PP_RADIUS_FACTOR`), and the TV PID/FF fractions (incl. `g_TV_I_MAX_FRAC`, the
+  integral cap as a fraction of motor torque). Only **two** gains are FIXED (not
+  swept) because they are NOT performance choices: `g_TV_YAW_DEADBAND` (a
+  sensor-noise floor) and `g_TV_K_US` (an empirical understeer term whose linear
+  derivation collapses to ~0 for this near-neutral car). The headline swept knobs
+  are `g_GRIP_USE`, `g_K_STANLEY`, `g_K_DAMP`, `g_RACING_MARGIN`, `g_KP_YAW`; the
+  full set (~26) is in `tunables.c` and the multi-track sweep's `PARAMS`. **Much
+  else is DERIVED** from `vehicle_config.h`: the single grip model `peak_lat(v)` in
+  `shared/grip_model.h` feeds the speed planner, friction-circle budget and
+  throttle cut; the steering feedforward/understeer come from the Pacejka
+  stiffness; the drag feedforward from the aero constants; `ACK_NOMINAL` is the
+  midpoint of the Ackermann ratios; the racing-line radius floor from the steering
+  geometry. (This replaced an earlier 16-tunable set whose steering was a
+  model-based LQR; see the steering note below for the pace trade-off.)
 
 - **Tools live in `tools/`, not `tests/`, and are named `tool_*`**
   (`tool_eval_lap.c`, `tool_perf_sim.c`, `tool_smart_sweep_lqr.py` /
@@ -126,31 +163,35 @@ These are things that are easy to get wrong and slow to rediscover.
   read the yaw-rate column as a wheel torque. The full field order is in the
   visualiser.py header.
 
-- **The steering driver is a model-based LQR law** (`HIL_Firmware/src/lqr_steer.c`),
-  not Pure Pursuit or Stanley (older comments/docs may still say either). It
-  solves an infinite-horizon LQR on the dynamic-bicycle lateral error dynamics
-  (e1=cross-track, e2=heading error) with a speed-scheduled gain, plus a
-  curvature feedforward and a cross-track integrator. It tracks the line far
-  tighter than the old geometric tracker (mean CTE ~0.09 m). Its tuning knobs
-  (Q/R cost weights, `LQR_KI`/`LQR_I_MAX`) live in `lqr_steer.c`, not in
-  `parameters_config.h`. Call `lqr_steer_reset()` between independent runs.
+- **The steering driver is a Stanley law plus a physics-derived curvature
+  feedforward**, inline in `HIL_Firmware/src/motion_control.c` (`steer_command`).
+  It replaced an earlier model-based LQR (the deleted `lqr_steer.c`); older
+  comments/docs may still say LQR, Pure Pursuit or Stanley — it is now Stanley.
+  The feedforward `δ = (L·κ + Kus·v²·κ)/ACK_NOMINAL` uses the understeer gradient
+  `Kus` derived from the Pacejka cornering stiffness (no tuning); the feedback is
+  `−e2 + atan2(K_STANLEY·(−e1), v)` on heading error e2 and cross-track e1. The
+  one steering tunable is `g_K_STANLEY`. It keeps NO integrator, so there is no
+  steering state to reset (mean CTE ~0.16 m, a touch looser than the old LQR's
+  ~0.09 m but 0 off-track and ~same lap time). `motion_control_reset()` clears
+  only the progress index and throttle integrator.
 
 - **Torque vectoring acts during braking too.** The left/right bias depends only
   on yaw-rate error, not on the sign of the driver torque, so it is applied to
   regen on corner entry as well as to drive on power. There are no friction
   brakes; the car brakes with motor regen only.
 
-- **The lap-time lever is corner speed (`MAX_LATERAL_ACCEL_MS2`), bounded by the
-  racing line.** The LQR tracker holds the line tightly enough to carry most of
-  the grip budget on the feasibility-aware racing line (shared config: fsg2024
-  ~27.1 s, fse2024 ~22.1 s, both clean). The budget, the line (`PP_GRIP_ACCEL`,
-  `RACING_MARGIN`, `PP_MIN_RADIUS_M` in `path_planning.c`), and the LQR cost
-  weights are coupled — raise the budget and the line must open the hairpin
-  (`PP_MIN_RADIUS_M`) and add apex clearance (`RACING_MARGIN`) or the car
-  saturates the steering and stalls. Re-tune them together (use
-  `tools/tool_smart_sweep_lqr_multi.py` for the shared two-track set, or
-  `tool_smart_sweep_lqr.py` for one track) and always confirm 0 off-track with
-  `make eval` on every track.
+- **The lap-time lever is corner speed, set by `g_GRIP_USE`** (the fraction of
+  the physically-derived peak grip the car drives at), bounded by the racing line.
+  The grip budget feeds the speed planner, the friction-circle braking budget and
+  the throttle traction cut through the single `peak_lat(v)` model, so there is
+  one grip number, not four. The racing line is shaped for the FULL physical peak
+  (its grip and radius floor are derived, not tuned), so `g_RACING_MARGIN` is the
+  line's only knob. Raising `g_GRIP_USE` toward 1 carries more speed but leaves
+  the Stanley tracker less margin; re-tune with
+  `tools/tool_smart_sweep_lqr_multi.py` (shared two-track set) or
+  `tool_smart_sweep_lqr.py` (one track) and always confirm 0 off-track with
+  `make eval` on every track. (The sweep tools now inject the five swept tunables
+  via `TUNE_*` env vars on a binary built once — no recompile per candidate.)
 
 - **The TV controller keeps internal PID state** (static integrator and previous
   error). Call `torque_vectoring_reset()` between independent runs or test cases.

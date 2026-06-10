@@ -67,7 +67,7 @@ static float step(VehicleState *state, Track *track, int tv_enabled)
 
     WheelTorques torques = { 0 };
     if (tv_enabled) {
-        torque_vectoring_update(&sensors, driver_torque, g_KP_YAW_DEFAULT, &torques);
+        torque_vectoring_update(&sensors, driver_torque, g_KP_YAW, &torques);
     } else {
         float base = driver_torque * 0.25f;
         torques.fl = torques.fr = torques.rl = torques.rr = base;
@@ -185,7 +185,7 @@ static void test_tv_on_off_torque_valid(void)
     pack_sensors(&state, driver, &sensors);
 
     WheelTorques on = { 0 };
-    torque_vectoring_update(&sensors, driver, g_KP_YAW_DEFAULT, &on);
+    torque_vectoring_update(&sensors, driver, g_KP_YAW, &on);
     float w_on[4] = { on.fl, on.fr, on.rl, on.rr };
     for (int i = 0; i < 4; i++) {
         ASSERT(w_on[i] <= MAX_MOTOR_TORQUE_NM + 0.001f);

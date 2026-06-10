@@ -23,53 +23,66 @@ OUT = os.path.join(BUILD, "eval_smartlqr_multi.exe")
 
 SRCS = ["tools/tool_eval_lap.c", "HIL_Firmware/src/motion_control.c",
         "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track_parser.c",
-        "HIL_Firmware/src/path_planning.c", "HIL_Firmware/src/lqr_steer.c",
+        "HIL_Firmware/src/path_planning.c",
         "ECU_Firmware/src/torque_vectoring.c", "shared/tunables.c"]
 INC = ["-I", "HIL_Firmware/include", "-I", "shared", "-I", "ECU_Firmware/include"]
 
 # Tracks to co-optimise. Names must match the tracks/*.yaml layout names.
 TRACKS = ["fsg2024", "fse2024"]
 
-# (name, low, high). Same high-leverage set as the single-track sweeper.
-# Ceilings on the grip-budget levers raised after a tyre/downforce-model probe
-# showed peak lateral accel is ~14.5 at the hairpin but 18-21+ in the fast
-# corners. The headroom is in USING the downforce (PLANNER_DOWNFORCE_FRAC up to
-# 1.0) and shaping the line for it (PP_GRIP_ACCEL), not in the low-speed base
-# (MAX_LATERAL_ACCEL_MS2, which the hairpin already pins).
+# (name, low, high). Every performance/behaviour gain is swept; only the two
+# genuine non-knobs (TV yaw deadband, the empirical TV understeer term) and the
+# measurable/derived physical constants (vehicle_config.h) are excluded. Integer
+# search depths are swept too (rounded on apply). This is a large space (~25 dims),
+# so a thorough run takes a while; trim PARAMS to the high-leverage head (grip /
+# steering / margin / radius / longitudinal / TV master) for a fast pass.
 PARAMS = [
-    ("MAX_LATERAL_ACCEL_MS2", 12.0, 15.5),
-    ("PP_GRIP_ACCEL",         10.0, 18.0),
-    ("RACING_MARGIN",          0.18, 0.34),
-    ("PP_MIN_RADIUS_M",        4.5,  6.5),
-    ("GG_ACCEL_MS2",           6.0,  13.0),
-    ("PLANNER_DOWNFORCE_FRAC", 0.2,  1.0),
-    ("LQR_Q_E1",              10.0, 40.0),
-    ("LQR_Q_E1D",              0.3,  3.0),
-    ("LQR_Q_E2",               3.0, 16.0),
-    ("LQR_Q_E2D",              0.1,  1.0),
-    ("LQR_R",                  2.0,  8.0),
-    ("LQR_KI",                 2.0, 10.0),
-    ("LQR_I_MAX",              0.3,  1.0),
-    ("LAT_GRIP_REF_MS2",      11.0, 20.0),
-    ("KP_YAW_DEFAULT",        40.0, 90.0),
-    ("TV_KFF",                 6.0, 18.0),
-    # TV_REAR_SHARE removed: the grip-aware bleed distributor allocates
-    # front/rear by grip ceiling, so the old fixed rear-share gain is now dead.
+    # grip / steering / racing line
+    ("GRIP_USE",         0.75,  1.00),
+    ("K_STANLEY",        2.0,  14.0),
+    ("K_DAMP",           0.0,   1.0),
+    ("RACING_MARGIN",    0.30,  0.50),
+    ("PP_RADIUS_FACTOR", 1.2,   2.2),
+    ("MAX_STEER_RAD",    1.3,   2.0),
+    ("MAX_STEER_RATE_RADS", 5.0, 12.0),
+    ("STEER_SAT_FRAC",   0.5,   0.9),
+    # speed planner / longitudinal
+    ("SPEED_PLAN_HORIZON_M", 50.0, 110.0),
+    ("SPEED_PLAN_STEPS",  24.0,  56.0),   # rounded to int on apply
+    ("MAX_BRAKE_DECEL_MS2", 4.0,  8.5),
+    ("SPEED_KP_NM",     400.0, 1200.0),
+    ("BRAKE_KP_NM",       8.0,  30.0),
+    ("SPEED_KI_NM",     150.0,  700.0),
+    ("SPEED_I_MAX_NM",  120.0,  400.0),
+    ("NEAREST_SEARCH_FWD", 16.0, 44.0),   # rounded to int on apply
+    # cone boundary safety net
+    ("BOUNDARY_CORR_GAIN",   0.15, 0.45),
+    ("BOUNDARY_SLOW_FACTOR", 0.4,  0.8),
+    # torque vectoring
+    ("KP_YAW",          40.0,  90.0),
+    ("TV_KI_FRAC",       1.0,   4.0),
+    ("TV_KD_FRAC",       0.0,   0.2),
+    ("TV_KFF_FRAC",      0.0,   0.3),
+    ("TV_I_MAX_FRAC",    0.2,   0.6),
+    ("TV_SPEED_REF_MS",  8.0,  16.0),
+    ("TV_WHEEL_YAW_TRUST", 0.0, 0.5),
 ]
+# Names the binary reads as ints (the eval applies them via TUNE_*; getenvi rounds).
+INT_PARAMS = {"SPEED_PLAN_STEPS", "NEAREST_SEARCH_FWD", "NEAREST_SEARCH_BACK"}
 NAMES = [p[0] for p in PARAMS]
 LO = {p[0]: p[1] for p in PARAMS}
 HI = {p[0]: p[2] for p in PARAMS}
 
-# Starting incumbent: the committed in-source defaults (the grip-aware
-# distributor's tuned set: fsg2024 ~25.1s, fse2024 ~18.7s, both clean and
-# robust to +/-3%; mean CTE ~0.14/0.20).
+# Starting incumbent: the committed in-source defaults (shared/tunables.c).
 DEFAULTS = {
-    "MAX_LATERAL_ACCEL_MS2": 12.6154, "PP_GRIP_ACCEL": 10.0000,
-    "RACING_MARGIN": 0.2587, "PP_MIN_RADIUS_M": 6.0329, "GG_ACCEL_MS2": 8.7898,
-    "PLANNER_DOWNFORCE_FRAC": 0.5670,
-    "LQR_Q_E1": 10.0000, "LQR_Q_E1D": 1.0432, "LQR_Q_E2": 9.7510,
-    "LQR_Q_E2D": 0.4511, "LQR_R": 2.8632, "LQR_KI": 7.9193, "LQR_I_MAX": 0.3000,
-    "LAT_GRIP_REF_MS2": 16.5044, "KP_YAW_DEFAULT": 86.2440, "TV_KFF": 10.3635,
+    "GRIP_USE": 0.90, "K_STANLEY": 8.0, "K_DAMP": 0.30, "RACING_MARGIN": 0.40,
+    "PP_RADIUS_FACTOR": 1.6, "MAX_STEER_RAD": 1.7, "MAX_STEER_RATE_RADS": 8.0,
+    "STEER_SAT_FRAC": 0.7, "SPEED_PLAN_HORIZON_M": 80.0, "SPEED_PLAN_STEPS": 40,
+    "MAX_BRAKE_DECEL_MS2": 5.6, "SPEED_KP_NM": 800.0, "BRAKE_KP_NM": 16.2,
+    "SPEED_KI_NM": 400.0, "SPEED_I_MAX_NM": 250.0, "NEAREST_SEARCH_FWD": 30,
+    "BOUNDARY_CORR_GAIN": 0.30, "BOUNDARY_SLOW_FACTOR": 0.6,
+    "KP_YAW": 86.2440, "TV_KI_FRAC": 2.5, "TV_KD_FRAC": 0.05, "TV_KFF_FRAC": 0.12,
+    "TV_I_MAX_FRAC": 0.408, "TV_SPEED_REF_MS": 12.0, "TV_WHEEL_YAW_TRUST": 0.25,
 }
 
 ROBUST_PCT = 0.03

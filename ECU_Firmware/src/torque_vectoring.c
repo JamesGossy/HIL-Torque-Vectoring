@@ -3,10 +3,12 @@
 #include "../../shared/tunables.h"
 #include <math.h>
 
-/* The TV yaw gains (g_KP_YAW_DEFAULT, g_TV_KFF) are runtime tunables defined in
- * shared/tunables.c (defaults + TUNE_* env overrides). They are read directly
- * below; the ECU only extern-references them via shared/tunables.h, so the HIL
- * boundary still holds (shared/ is the one place both sides may share code). */
+/* The swept TV tunable is the master yaw gain g_KP_YAW; the feedforward,
+ * integral and derivative are fixed fractions of it (g_TV_KFF_FRAC /
+ * g_TV_KI_FRAC / g_TV_KD_FRAC), so the whole loop scales with one knob. All the
+ * TV gains are g_* globals in shared/tunables.c; the ECU only extern-references
+ * them via shared/tunables.h, so the HIL boundary still holds (shared/ is the
+ * one place both sides may share code). */
 
 /*
  * torque_vectoring.c
@@ -36,8 +38,9 @@
  * The controller keeps a little internal state (the integrator, previous error,
  * and lagged accel estimates) in static variables. That is safe because the HIL
  * host calls this once per fixed-rate tick, and the state self-heals (anti-wound,
- * decays to zero). Fixed constants come from shared/constants_config.h; the
- * tunable yaw gains are runtime globals in shared/tunables.c.
+ * decays to zero). Physical constants (geometry, motor limit, control period)
+ * come from shared/vehicle_config.h; every TV gain is a g_* global in
+ * shared/tunables.c.
  */
 
 /* Geometry aliases from shared/vehicle_config.h. */
@@ -156,7 +159,7 @@ void torque_vectoring_update(
     float desired_yaw_rate = 0.0f;
     if (sensors->velocity > 0.5f) {
         float v          = sensors->velocity;
-        desired_yaw_rate = v * tanf(sensors->steering_angle) / (TV_WHEELBASE_M + TV_K_US * v * v);
+        desired_yaw_rate = v * tanf(sensors->steering_angle) / (TV_WHEELBASE_M + g_TV_K_US * v * v);
     }
 
     /* Step 1b: fuse the IMU yaw rate with a wheel-speed estimate. The wheel
@@ -172,14 +175,14 @@ void torque_vectoring_update(
     float r_wheels = 0.5f * (r_front + r_rear);
 
     float yaw_rate_est
-        = (1.0f - TV_WHEEL_YAW_TRUST) * sensors->yaw_rate + TV_WHEEL_YAW_TRUST * r_wheels;
+        = (1.0f - g_TV_WHEEL_YAW_TRUST) * sensors->yaw_rate + g_TV_WHEEL_YAW_TRUST * r_wheels;
 
     /* Step 2: yaw error, with a deadband so the bias does not chatter on noise. */
     float yaw_error = desired_yaw_rate - yaw_rate_est;
-    if (yaw_error > TV_YAW_DEADBAND)
-        yaw_error -= TV_YAW_DEADBAND;
-    else if (yaw_error < -TV_YAW_DEADBAND)
-        yaw_error += TV_YAW_DEADBAND;
+    if (yaw_error > g_TV_YAW_DEADBAND)
+        yaw_error -= g_TV_YAW_DEADBAND;
+    else if (yaw_error < -g_TV_YAW_DEADBAND)
+        yaw_error += g_TV_YAW_DEADBAND;
     else
         yaw_error = 0.0f;
 
@@ -193,7 +196,7 @@ void torque_vectoring_update(
      * stays consistent across the speed range. Capped near standstill. */
     float effective_kp = kp_yaw;
     if (sensors->velocity > 2.0f) {
-        effective_kp = kp_yaw * (TV_SPEED_REF_MS / sensors->velocity);
+        effective_kp = kp_yaw * (g_TV_SPEED_REF_MS / sensors->velocity);
         if (effective_kp > kp_yaw * 3.0f) effective_kp = kp_yaw * 3.0f;
     }
 
@@ -201,26 +204,28 @@ void torque_vectoring_update(
      * so the moment is there before any error develops. */
     float ff = 0.0f;
     if (kp_yaw > 0.0f && sensors->velocity > 2.0f)
-        ff = g_TV_KFF * desired_yaw_rate * sensors->velocity;
+        ff = (g_TV_KFF_FRAC * kp_yaw) * desired_yaw_rate * sensors->velocity;
 
     /* Step 5: PID feedback. P trims the residual, I erases standing understeer,
      * D damps turn-in. Gain = 0 disables the whole FF+feedback path. */
     float p_term = effective_kp * yaw_error;
 
     float d_error = (yaw_error - g_prev_error) / CONTROL_DT_S;
-    float d_term  = (TV_KD_FRAC * effective_kp) * d_error;
+    float d_term  = (g_TV_KD_FRAC * effective_kp) * d_error;
     g_prev_error  = yaw_error;
 
     /* Provisional integral update (may be rolled back by anti-windup below). */
-    float ki         = TV_KI_FRAC * effective_kp;
+    float ki         = g_TV_KI_FRAC * effective_kp;
     float integ_next = g_integ + yaw_error * CONTROL_DT_S;
-    /* Hard cap the integral contribution to bias. */
+    /* Hard cap the integral contribution to bias, as a fraction of the motor peak
+     * (so the cap scales with the actual torque authority, not a magic Nm). */
+    float i_max     = g_TV_I_MAX_FRAC * MAX_MOTOR_TORQUE_NM;
     float i_contrib = ki * integ_next;
-    if (i_contrib > TV_I_MAX_NM) {
-        integ_next = TV_I_MAX_NM / (ki > 1e-6f ? ki : 1e-6f);
+    if (i_contrib > i_max) {
+        integ_next = i_max / (ki > 1e-6f ? ki : 1e-6f);
     }
-    if (i_contrib < -TV_I_MAX_NM) {
-        integ_next = -TV_I_MAX_NM / (ki > 1e-6f ? ki : 1e-6f);
+    if (i_contrib < -i_max) {
+        integ_next = -i_max / (ki > 1e-6f ? ki : 1e-6f);
     }
     float i_term = ki * integ_next;
 

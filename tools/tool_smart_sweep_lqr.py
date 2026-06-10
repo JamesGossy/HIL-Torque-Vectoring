@@ -26,51 +26,42 @@ OUT = os.path.join(BUILD, "eval_smartlqr.exe")
 
 SRCS = ["tools/tool_eval_lap.c", "HIL_Firmware/src/motion_control.c",
         "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track_parser.c",
-        "HIL_Firmware/src/path_planning.c", "HIL_Firmware/src/lqr_steer.c",
+        "HIL_Firmware/src/path_planning.c",
         "ECU_Firmware/src/torque_vectoring.c"]
 INC = ["-I", "HIL_Firmware/include", "-I", "shared", "-I", "ECU_Firmware/include"]
-EXTRA_DEFS = []   # LQR steering is unconditional; no enabling define needed
+EXTRA_DEFS = []   # steering is unconditional; no enabling define needed
 
-# (name, low, high). Bounds bracket the recommended companion settings.
+# (name, low, high). This single-track tool sweeps the HIGH-LEVERAGE head only,
+# so it stays fast; the full ~25-gain space is in tool_smart_sweep_lqr_multi.py.
+# Add any other tunable here to include it (every gain has a TUNE_* override).
 PARAMS = [
-    # path planner / speed (the line the tight tracker needs)
-    ("MAX_LATERAL_ACCEL_MS2", 10.0, 14.5),
-    ("PP_GRIP_ACCEL",         10.0, 14.5),
-    ("RACING_MARGIN",          0.18, 0.34),
-    ("PP_MIN_RADIUS_M",        4.5,  6.5),
-    ("GG_ACCEL_MS2",           6.0,  10.0),
-    ("PLANNER_DOWNFORCE_FRAC", 0.0,  0.6),
-    # LQR cost weights (the controller's own tuning)
-    ("LQR_Q_E1",              10.0, 40.0),
-    ("LQR_Q_E1D",              0.3,  3.0),
-    ("LQR_Q_E2",               3.0, 16.0),
-    ("LQR_Q_E2D",              0.1,  1.0),
-    ("LQR_R",                  2.0,  8.0),
-    ("LQR_KI",                 2.0, 10.0),
-    ("LQR_I_MAX",              0.3,  1.0),
-    # throttle / TV
-    ("LAT_GRIP_REF_MS2",      11.0, 16.0),
-    ("KP_YAW_DEFAULT",        40.0, 90.0),
-    ("TV_KFF",                 6.0, 18.0),
-    ("TV_REAR_SHARE",          0.45, 0.70),
+    ("GRIP_USE",         0.75,  1.00),  # fraction of physical peak lateral grip
+    ("K_STANLEY",        2.0,  14.0),   # Stanley steering cross-track gain
+    ("K_DAMP",           0.0,   1.0),   # Stanley yaw-rate damping gain
+    ("RACING_MARGIN",    0.30,  0.50),  # racing-line corridor safety margin
+    ("PP_RADIUS_FACTOR", 1.2,   2.2),   # racing-line radius-floor opening
+    ("MAX_STEER_RAD",    1.3,   2.0),   # steering reference limit
+    ("MAX_BRAKE_DECEL_MS2", 4.0, 8.5),  # braking-effort cap
+    ("SPEED_KP_NM",    400.0, 1200.0),  # throttle P-gain
+    ("KP_YAW",          40.0,  90.0),   # master torque-vectoring yaw gain
 ]
+INT_PARAMS = {"SPEED_PLAN_STEPS", "NEAREST_SEARCH_FWD", "NEAREST_SEARCH_BACK"}
 NAMES = [p[0] for p in PARAMS]
 LO = {p[0]: p[1] for p in PARAMS}
 HI = {p[0]: p[2] for p in PARAMS}
 
-# Starting incumbent: the committed in-source defaults. These are now the SHARED
-# config that laps both fsg2024 and fse2024 cleanly (see tool_smart_sweep_lqr_multi.py),
-# so on fsg2024 alone this single-track sweep can usually improve on them. Keep
-# in sync with the #ifndef defaults in parameters_config.h / lqr_steer.c /
-# path_planning.c so a re-run starts from the shipped config.
+# Starting incumbent: the committed in-source defaults (shared/tunables.c). Full
+# set so any DEFAULT carries through even for gains not in PARAMS above. Keep in
+# sync with tunables.c.
 DEFAULTS = {
-    "MAX_LATERAL_ACCEL_MS2": 10.9412, "PP_GRIP_ACCEL": 12.6186,
-    "RACING_MARGIN": 0.3400, "PP_MIN_RADIUS_M": 4.5000, "GG_ACCEL_MS2": 6.7782,
-    "PLANNER_DOWNFORCE_FRAC": 0.5586,
-    "LQR_Q_E1": 10.0000, "LQR_Q_E1D": 3.0000, "LQR_Q_E2": 8.8178,
-    "LQR_Q_E2D": 0.3601, "LQR_R": 8.0000, "LQR_KI": 2.5444, "LQR_I_MAX": 0.7178,
-    "LAT_GRIP_REF_MS2": 14.4066, "KP_YAW_DEFAULT": 48.4545, "TV_KFF": 11.4068,
-    "TV_REAR_SHARE": 0.6122,
+    "GRIP_USE": 0.90, "K_STANLEY": 8.0, "K_DAMP": 0.30, "RACING_MARGIN": 0.40,
+    "PP_RADIUS_FACTOR": 1.6, "MAX_STEER_RAD": 1.7, "MAX_STEER_RATE_RADS": 8.0,
+    "STEER_SAT_FRAC": 0.7, "SPEED_PLAN_HORIZON_M": 80.0, "SPEED_PLAN_STEPS": 40,
+    "MAX_BRAKE_DECEL_MS2": 5.6, "SPEED_KP_NM": 800.0, "BRAKE_KP_NM": 16.2,
+    "SPEED_KI_NM": 400.0, "SPEED_I_MAX_NM": 250.0, "NEAREST_SEARCH_FWD": 30,
+    "BOUNDARY_CORR_GAIN": 0.30, "BOUNDARY_SLOW_FACTOR": 0.6,
+    "KP_YAW": 86.2440, "TV_KI_FRAC": 2.5, "TV_KD_FRAC": 0.05, "TV_KFF_FRAC": 0.12,
+    "TV_I_MAX_FRAC": 0.408, "TV_SPEED_REF_MS": 12.0, "TV_WHEEL_YAW_TRUST": 0.25,
 }
 
 ROBUST_PCT = 0.03

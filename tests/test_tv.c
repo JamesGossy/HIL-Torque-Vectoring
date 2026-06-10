@@ -66,7 +66,7 @@ static void test_zero_error_even_split(void)
     SensorData s = straight(10.0f);
     WheelTorques t;
     float total = 40.0f; /* any positive value */
-    torque_vectoring_update(&s, total, g_KP_YAW_DEFAULT, &t);
+    torque_vectoring_update(&s, total, g_KP_YAW, &t);
 
     /* No yaw demand -> left side == right side (no differential). */
     ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);
@@ -84,7 +84,7 @@ static void test_low_speed_no_yaw_demand(void)
     s.velocity       = 0.1f;
     s.steering_angle = 0.5f; /* large steer - should produce no demand */
     WheelTorques t;
-    torque_vectoring_update(&s, 40.0f, g_KP_YAW_DEFAULT, &t);
+    torque_vectoring_update(&s, 40.0f, g_KP_YAW, &t);
 
     ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f); /* no differential */
 }
@@ -99,7 +99,7 @@ static void test_left_turn_biases_right_wheels(void)
     s.steering_angle = 0.3f; /* turning left */
     s.yaw_rate       = 0.0f; /* not rotating yet -> large positive error */
     WheelTorques t;
-    torque_vectoring_update(&s, 40.0f, g_KP_YAW_DEFAULT, &t);
+    torque_vectoring_update(&s, 40.0f, g_KP_YAW, &t);
 
     ASSERT(t.fr > t.fl); /* right (outer) > left (inner) */
     ASSERT(t.rr > t.rl);
@@ -117,7 +117,7 @@ static void test_right_turn_biases_left_wheels(void)
     s.steering_angle = -0.3f;
     s.yaw_rate       = 0.0f;
     WheelTorques t;
-    torque_vectoring_update(&s, 40.0f, g_KP_YAW_DEFAULT, &t);
+    torque_vectoring_update(&s, 40.0f, g_KP_YAW, &t);
 
     ASSERT(t.fl > t.fr);
     ASSERT(t.rl > t.rr);
@@ -135,9 +135,9 @@ static void test_symmetry(void)
 
     WheelTorques tL, tR;
     torque_vectoring_reset();
-    torque_vectoring_update(&sL, 60.0f, g_KP_YAW_DEFAULT, &tL);
+    torque_vectoring_update(&sL, 60.0f, g_KP_YAW, &tL);
     torque_vectoring_reset();
-    torque_vectoring_update(&sR, 60.0f, g_KP_YAW_DEFAULT, &tR);
+    torque_vectoring_update(&sR, 60.0f, g_KP_YAW, &tR);
 
     ASSERT_NEAR(tL.fl, tR.fr, 0.01f);
     ASSERT_NEAR(tL.fr, tR.fl, 0.01f);
@@ -154,13 +154,13 @@ static void test_deadband(void)
     s.velocity       = 10.0f;
     s.steering_angle = 0.0f;
     /* Inject a tiny yaw rate error just inside the deadband */
-    float desired = 10.0f * tanf(0.0f) / 1.55f;         /* = 0 for steer = 0 */
-    s.yaw_rate    = desired + (TV_YAW_DEADBAND * 0.5f); /* error = -half_band */
+    float desired = 10.0f * tanf(0.0f) / 1.55f;           /* = 0 for steer = 0 */
+    s.yaw_rate    = desired + (g_TV_YAW_DEADBAND * 0.5f); /* error = -half_band */
     for (int i = 0; i < 4; i++)
         s.wheel_speed[i] = 10.0f / 0.254f;
 
     WheelTorques t;
-    torque_vectoring_update(&s, 40.0f, g_KP_YAW_DEFAULT, &t);
+    torque_vectoring_update(&s, 40.0f, g_KP_YAW, &t);
 
     /* Error inside the deadband -> zero bias -> no left/right differential. */
     ASSERT_NEAR(t.fl + t.rl, t.fr + t.rr, 0.01f);

@@ -1,7 +1,7 @@
 #include "../include/path_planning.h"
-#include "constants_config.h" /* fixed planner constants (PP_V_MAX, etc.) */
-#include "vehicle_config.h"   /* apex_speed() / lateral_grip_accel() (downforce) */
-#include "tunables.h"         /* runtime-overridable racing-line gains */
+#include "vehicle_config.h" /* MAX_STEER_RAD, ACK_NOMINAL, apex_speed() etc. */
+#include "grip_model.h"     /* PEAK_LAT_FLAT / peak_lat() - the single grip ref */
+#include "tunables.h"       /* runtime-overridable racing-line gains */
 #include <math.h>
 
 /*
@@ -84,8 +84,9 @@ static void extract_gates(int n_left, int n_right)
  * leave enough clearance that the tracker - which now follows the line closely -
  * does not ride the apex cones: a faithful tracker needs the line itself to
  * clear cones by more than the off-track threshold plus its own cross-track
- * error. It is a runtime tunable (g_RACING_MARGIN, with g_PP_GRIP_ACCEL and
- * g_PP_MIN_RADIUS_M) defined in shared/tunables.c. */
+ * error. It is the racing line's one runtime tunable (g_RACING_MARGIN) in
+ * shared/tunables.c; the line's grip and radius floor are now DERIVED from
+ * vehicle_config.h (PEAK_LAT_FLAT / peak_lat() and PP_MIN_RADIUS_M). */
 #define OPT_PASSES 400
 
 /* Centreline (one entry per gate, in order) */
@@ -220,21 +221,14 @@ static void compute_normals(void)
  *
  * Runs once at startup, so the O(passes * n^2) cost is irrelevant.
  *
- * The solver optimises against PP_GRIP_ACCEL (the car's TRUE grip, well above
- * the conservative MAX_LATERAL_ACCEL_MS2 the on-car planner drives with) so the
- * LINE GEOMETRY reflects what the car can really do. The car still plans its
- * speed conservatively; only the shape of the path comes from this solve. */
+ * The solver optimises against the car's FULL physical grip (peak_lat(), the
+ * tyre limit plus downforce, well above the GRIP_USE-scaled budget the on-car
+ * planner drives with) so the LINE GEOMETRY reflects what the car can really do.
+ * The car still plans its speed conservatively (GRIP_USE < 1); only the shape of
+ * the path comes from this solve. The grip is no longer a tunable - it is the
+ * physically-derived peak from grip_model.h, kept feasible by the PP_MIN_RADIUS_M
+ * floor below. */
 
-/* Combined grip the solver shapes the line for, m/s^2. By default this is the
- * SAME budget the on-car speed planner uses (MAX_LATERAL_ACCEL_MS2), so the line
- * is time-optimal for the car that actually drives it - not for a faster
- * hypothetical car. (An earlier version set this well above the planner budget;
- * that only "worked" because a high grip masked the solver spiking the curvature
- * into an un-steerable apex. The PP_MIN_RADIUS_M feasibility floor below now
- * prevents that directly, so the grip can be self-consistent.) Override it only
- * if you deliberately want to shape a more/less aggressive line than the car
- * drives; always confirm 0 off-track with `make eval`. Runtime tunable:
- * g_PP_GRIP_ACCEL in shared/tunables.c. */
 /* Longitudinal accel/brake limits for the speed-profile passes, m/s^2. */
 #ifndef PP_ACCEL_LON
 #define PP_ACCEL_LON 6.0f
@@ -246,23 +240,32 @@ static void compute_normals(void)
 #define PP_V_MAX 30.0f
 
 /* Feasibility floor: the car's steering geometry gives a kinematic minimum
- * turning radius of ~3.8 m (MAX_STEER_RAD), but the radius it can actually HOLD
- * AT SPEED is larger - once the front tyre is loaded, understeer/slip mean too
- * tight an apex needs more than full steering lock, so the car saturates at the
- * stop, washes wide, and scrubs to a near-stall crawl at the hairpin. The floor
- * must therefore be the DYNAMICALLY achievable radius, not the kinematic one.
- *
- * 6.26 m suits the LQR car at its high (~13.7 m/s^2) corner-speed budget: the
- * tight LQR tracker loads the front hard at the apex, so the hairpin must be
- * opened this far or the car saturates the steering and stalls there. Tune it
- * with the budget; too low and the hairpin stalls, much higher and the line
- * gives away time on the medium corners.
+ * turning radius (full lock), but the radius it can actually HOLD AT SPEED is
+ * larger - once the front tyre is loaded, understeer/slip mean too tight an apex
+ * needs more than full steering lock, so the car saturates at the stop, washes
+ * wide, and scrubs to a near-stall crawl at the hairpin. The floor is therefore
+ * DERIVED, not tuned: the kinematic minimum (WHEELBASE / tan(full wheel angle),
+ * the wheel angle being MAX_STEER_RAD scaled by the Ackermann ratio) opened by a
+ * fixed dynamic factor that accounts for the understeer/slip the kinematic model
+ * ignores. This reproduces the old empirically-tuned ~6 m floor from geometry
+ * alone. lap_time() additionally lets fast corners run tighter where downforce
+ * holds them (the r_speed term below), so this floor only binds the slow
+ * (no-downforce) hairpins.
  *
  * The quasi-steady-state speed model does NOT know any of this on its own: it
  * reads a tight radius as a low corner speed and happily spikes the curvature.
  * lap_time() charges a steep penalty for any segment tighter than this floor, so
- * the optimiser never draws an un-holdable apex. Runtime tunable:
- * g_PP_MIN_RADIUS_M in shared/tunables.c. */
+ * the optimiser never draws an un-holdable apex. */
+/* Feasibility floor radius, m: the kinematic minimum (WHEELBASE / tan(full wheel
+ * angle), the wheel angle being the steering reference g_MAX_STEER_RAD scaled by
+ * the Ackermann ratio) opened by g_PP_RADIUS_FACTOR for the understeer/slip the
+ * kinematic model ignores. Both inputs are tunable, so this is computed at runtime
+ * rather than as a #define. */
+static float pp_min_radius_m(void)
+{
+    float r_kin = WHEELBASE_M / tanf(g_MAX_STEER_RAD * ACK_NOMINAL);
+    return g_PP_RADIUS_FACTOR * r_kin;
+}
 /* Penalty weight, seconds of fake lap time per (1/m) of curvature over the
  * floor. Large enough to dominate any real time gain a too-tight apex could
  * offer, so an infeasible radius is always rejected. */
@@ -317,7 +320,7 @@ static float lt_k[MAX_WAYPOINTS];  /* line curvature at point i, 1/m   */
  * corners brake/accelerate harder on their downforce, the whole point of #1. */
 static float lon_accel_avail(float v, float k, float a_cap)
 {
-    float gg     = lateral_grip_accel(g_GG_ACCEL_MS2, v);
+    float gg     = peak_lat(v); /* line shaped for the full physical grip */
     float a_lat  = v * v * k;
     float budget = gg * gg - a_lat * a_lat;
     float a_lon  = (budget > 0.0f) ? sqrtf(budget) : 0.0f;
@@ -362,7 +365,7 @@ static float lap_time(int n)
          * of the optimiser - a gripless line gives away the fast corners. */
         float k = line_curvature(i, n);
         lt_k[i] = k;
-        lt_v[i] = apex_speed(g_PP_GRIP_ACCEL, k, PP_V_MAX);
+        lt_v[i] = apex_speed(PEAK_LAT_FLAT, k, PP_V_MAX);
     }
 
     /* Forward (traction-out) and backward (braking) passes under the friction
@@ -395,7 +398,8 @@ static float lap_time(int n)
      * can actually hold at this point's planned speed, so fast corners may run
      * tighter (carrying more apex speed) while the hairpin still gets its full
      * PP_MIN_RADIUS_M opening (no downforce there). */
-    float t = 0.0f;
+    float r_floor = pp_min_radius_m();
+    float t       = 0.0f;
     for (i = 0; i < n; i++) {
         int j      = (i + 1) % n;
         float vavg = 0.5f * (lt_v[i] + lt_v[j]);
@@ -403,9 +407,9 @@ static float lap_time(int n)
         t += lt_ds[i] / vavg;
 
         float k       = lt_k[i];
-        float r_hold  = g_PP_MIN_RADIUS_M; /* slow-corner (no downforce) floor */
-        float a_dyn   = lateral_grip_accel(g_PP_GRIP_ACCEL, lt_v[i]);
-        float r_speed = (a_dyn > 1e-3f) ? lt_v[i] * lt_v[i] / a_dyn : g_PP_MIN_RADIUS_M;
+        float r_hold  = r_floor; /* slow-corner (no downforce) floor */
+        float a_dyn   = peak_lat(lt_v[i]);
+        float r_speed = (a_dyn > 1e-3f) ? lt_v[i] * lt_v[i] / a_dyn : r_floor;
         if (r_speed < r_hold) r_hold = r_speed; /* tighter allowed where downforce holds it */
         float k_floor = 1.0f / r_hold;
         if (k > k_floor) t += PP_CURV_PENALTY * (k - k_floor);

@@ -2,8 +2,8 @@
 #define TORQUE_VECTORING_H
 
 #include "../../shared/tv_interface.h"
-#include "../../shared/constants_config.h"
-#include "../../shared/tunables.h" /* g_KP_YAW_DEFAULT, g_TV_KFF (runtime gains) */
+#include "../../shared/vehicle_config.h" /* geometry, motor limit, CONTROL_DT_S */
+#include "../../shared/tunables.h"       /* g_KP_YAW + the TV shaping gains */
 
 /*
  * torque_vectoring.h
@@ -18,8 +18,8 @@
  * feedback on yaw-rate error, with a rear-biased torque split.
  *
  * Runtime tuning: press [ or ] to change KP_YAW by 5, or t to toggle TV on/off.
- * Fixed constants live in shared/constants_config.h; the tunable yaw gains are
- * runtime globals in shared/tunables.c.
+ * Every TV gain is a g_* global in shared/tunables.c; the physical constants it
+ * uses are in shared/vehicle_config.h.
  */
 
 /*
