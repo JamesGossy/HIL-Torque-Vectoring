@@ -6,6 +6,7 @@
  */
 
 #include "../include/vehicle_model.h"
+#include "../../shared/load_transfer.h"
 #include <math.h>
 
 static const float PI = 3.14159265358979323846f;
@@ -60,38 +61,15 @@ void vehicle_model_update(VehicleState *s, const WheelTorques *t, float dt)
 
     /* ---- loads: aero + longitudinal + lateral transfer ---- */
 
-    float q           = 0.5f * AIR_DENSITY * AERO_AREA * vx * vx; /* aero forces */
-    float F_downforce = CLA * q;
-    float F_drag      = CDA * q;
+    float F_drag = CDA * (0.5f * AIR_DENSITY * AERO_AREA * vx * vx);
 
-    /* Per-wheel normal loads: static split + aero + longitudinal/lateral transfer. */
-    float Fz_front_axle = MASS_KG * g * (CG_TO_REAR_M / WHEELBASE_M) + F_downforce * 0.5f;
-    float Fz_rear_axle  = MASS_KG * g * (CG_TO_FRONT_M / WHEELBASE_M) + F_downforce * 0.5f;
-
-    /* Use lagged accelerations, not same-tick, so the model does not ring. */
-    float dFz_long = s->ax_filt * MASS_KG * CG_HEIGHT_M / WHEELBASE_M;
-    Fz_front_axle -= dFz_long;
-    Fz_rear_axle += dFz_long;
-
-    if (Fz_front_axle < 50.0f) Fz_front_axle = 50.0f;
-    if (Fz_rear_axle < 50.0f) Fz_rear_axle = 50.0f;
-
-    /* m_axle uses the static CG split so aero/longitudinal transfer is not fed back in. */
-    float m_front       = MASS_KG * (CG_TO_REAR_M / WHEELBASE_M);
-    float m_rear        = MASS_KG * (CG_TO_FRONT_M / WHEELBASE_M);
-    float dFz_lat_front = m_front * s->ay_filt * CG_HEIGHT_M / TRACK_WIDTH_FRONT_M;
-    float dFz_lat_rear  = m_rear * s->ay_filt * CG_HEIGHT_M / TRACK_WIDTH_REAR_M;
-
-    /* +ay loads the right wheels and unloads the left. */
-    float Fz_fl = 0.5f * Fz_front_axle - dFz_lat_front;
-    float Fz_fr = 0.5f * Fz_front_axle + dFz_lat_front;
-    float Fz_rl = 0.5f * Fz_rear_axle - dFz_lat_rear;
-    float Fz_rr = 0.5f * Fz_rear_axle + dFz_lat_rear;
-
-    if (Fz_fl < 25.0f) Fz_fl = 25.0f;
-    if (Fz_fr < 25.0f) Fz_fr = 25.0f;
-    if (Fz_rl < 25.0f) Fz_rl = 25.0f;
-    if (Fz_rr < 25.0f) Fz_rr = 25.0f;
+    /* Lagged accelerations, not same-tick, so the model does not ring. */
+    float Fz[4];
+    load_transfer(vx, s->ax_filt, s->ay_filt, Fz);
+    float Fz_fl = Fz[WHEEL_FL];
+    float Fz_fr = Fz[WHEEL_FR];
+    float Fz_rl = Fz[WHEEL_RL];
+    float Fz_rr = Fz[WHEEL_RR];
 
     /* ---- slip angles ---- */
 

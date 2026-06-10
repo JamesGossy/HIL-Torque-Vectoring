@@ -41,6 +41,36 @@ static Track make_oval(int n, float length, float half_w)
     return t;
 }
 
+/* Build a closed circular track of the given centreline radius and corridor width. */
+static Track make_ring(int n, float radius, float half_w)
+{
+    Track t;
+    memset(&t, 0, sizeof(t));
+    if (n > MAX_CONES) n = MAX_CONES;
+    for (int i = 0; i < n; i++) {
+        float a            = 2.0f * 3.14159265f * i / (float)n;
+        float c            = cosf(a), s = sinf(a);
+        t.left_cones[i].x  = (radius + half_w) * c; // outer ring
+        t.left_cones[i].y  = (radius + half_w) * s;
+        t.right_cones[i].x = (radius - half_w) * c; // inner ring
+        t.right_cones[i].y = (radius - half_w) * s;
+    }
+    t.left_count  = n;
+    t.right_count = n;
+    return t;
+}
+
+/* Mean distance of the racing line from the centreline radius. */
+static float mean_radius_offset(const Track *t, float centre_radius)
+{
+    float acc = 0.0f;
+    for (int i = 0; i < t->count; i++) {
+        float r = sqrtf(t->points[i].x * t->points[i].x + t->points[i].y * t->points[i].y);
+        acc += (r - centre_radius);
+    }
+    return acc / (float)t->count;
+}
+
 /* path_plan must produce at least a few waypoints from a valid cone set */
 static void test_produces_waypoints(void)
 {
@@ -113,6 +143,46 @@ static void test_minimal_cone_set(void)
     ASSERT(t.count >= 0);
 }
 
+/* on a single constant-radius bend the line should cut toward the inside (apex) */
+static void test_cuts_apex_on_bend(void)
+{
+    /* quarter-circle of cones: centre radius 20 m, 4 m corridor */
+    Track t;
+    memset(&t, 0, sizeof(t));
+    int n          = 40;
+    float radius   = 20.0f;
+    float half_w   = 2.0f;
+    for (int i = 0; i < n; i++) {
+        float a            = 0.5f * 3.14159265f * i / (float)(n - 1); // 0..90 deg
+        float c            = cosf(a), s = sinf(a);
+        t.left_cones[i].x  = (radius + half_w) * c; // outer
+        t.left_cones[i].y  = (radius + half_w) * s;
+        t.right_cones[i].x = (radius - half_w) * c; // inner
+        t.right_cones[i].y = (radius - half_w) * s;
+    }
+    t.left_count  = n;
+    t.right_count = n;
+    path_plan(&t);
+
+    /* the line should sit inside the centreline radius through the bend (apex cut) */
+    float off = mean_radius_offset(&t, radius);
+    ASSERT(off < 0.0f); // negative = inside the centreline
+}
+
+/* a planned ring line must stay strictly within the cone corridor */
+static void test_ring_inside_corridor(void)
+{
+    float radius = 25.0f, half_w = 2.5f;
+    Track t      = make_ring(60, radius, half_w);
+    path_plan(&t);
+
+    for (int i = 0; i < t.count; i++) {
+        float r = sqrtf(t.points[i].x * t.points[i].x + t.points[i].y * t.points[i].y);
+        ASSERT(r <= radius + half_w + 0.1f);
+        ASSERT(r >= radius - half_w - 0.1f);
+    }
+}
+
 /* calling path_plan twice must give the same result (deterministic) */
 static void test_deterministic(void)
 {
@@ -137,6 +207,8 @@ int main(void)
     test_centreline_on_straight();
     test_large_cone_count();
     test_minimal_cone_set();
+    test_cuts_apex_on_bend();
+    test_ring_inside_corridor();
     test_deterministic();
 
     fprintf(stderr, "%d/%d tests passed\n", g_passed, g_tests);

@@ -3,6 +3,8 @@
 #include "grip_model.h"
 #include "tunables.h"
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* Builds the racing line: detect gates, resample the centreline, then bend it
  * within the corridor to minimise lap time. */
@@ -317,14 +319,25 @@ static void seed_min_curvature(int n)
     }
 }
 
+/* Diagnostics from a racing-line optimisation, for the convergence check. */
+typedef struct {
+    float t_centre;  /* lap time of the plain centreline */
+    float t_best;    /* lap time of the optimised line */
+    int passes_used; /* coordinate-descent passes run */
+    int converged;   /* 1 if delta shrank to the floor before the pass cap */
+} PpResult;
+
 /* Coordinate descent on the lap-time objective, refining the seeded line. */
-static void optimize_racing_line(void)
+static PpResult optimize_racing_line(void)
 {
     int pass, i, n = rs_n;
+    PpResult res = { 0.0f, 0.0f, 0, 0 };
 
     for (i = 0; i < n; i++)
         rs_off[i] = 0.0f;
-    if (n < 5) return;
+    if (n < 5) return res;
+
+    res.t_centre = lap_time(n); /* centreline time before any optimisation */
 
     seed_min_curvature(n);
 
@@ -356,6 +369,11 @@ static void optimize_racing_line(void)
         }
         if (!improved) delta *= 0.5f; /* no gain at this scale, refine */
     }
+
+    res.t_best      = best;
+    res.passes_used = pass;
+    res.converged   = (delta < CD_DELTA_MIN); /* refined to the floor, not stopped at the cap */
+    return res;
 }
 
 
@@ -384,7 +402,19 @@ void path_plan(Track *track)
     // 4. unit normals for lateral offset
     compute_normals();
     // 5. coordinate descent on lap time to find the racing line
-    optimize_racing_line();
+    PpResult res = optimize_racing_line();
+
+    // PP_DEBUG=1 reports whether the search converged and that it beat the centreline
+    if (getenv("PP_DEBUG")) {
+        float gain = res.t_centre - res.t_best;
+        fprintf(stderr,
+            "PP_RESULT waypoints=%d centre_s=%.3f best_s=%.3f gain_s=%.3f passes=%d converged=%d\n",
+            rs_n, res.t_centre, res.t_best, gain, res.passes_used, res.converged);
+        if (gain < 0.0f)
+            fprintf(stderr, "PP_WARN optimised line is SLOWER than the centreline\n");
+        if (!res.converged)
+            fprintf(stderr, "PP_WARN coordinate descent hit the pass cap without converging\n");
+    }
 
     for (i = 0; i < rs_n; i++) {
         track->points[i].x = rs_px(i);

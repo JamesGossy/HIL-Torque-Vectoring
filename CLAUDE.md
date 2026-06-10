@@ -3,7 +3,7 @@
 ## Comments
 - No AI-sounding language. Plain, direct English only.
 - No em dashes anywhere (not in comments, not in strings, not in docs).
-- Default: no comments. Only add one when the WHY is non-obvious — a hidden constraint, a subtle invariant, a workaround for a known bug.
+- Default: no comments. Only add one when the WHY is non-obvious: a hidden constraint, a subtle invariant, a workaround for a known bug.
 - Strongly prefer inline comments (`// ...` at end of line) over standalone lines.
 - File top: a short block comment is allowed (2-5 lines max). Describe what the file does and any key design constraint. Not a list of functions.
 - Function top: one short line is allowed if the function is non-obvious. No multi-line docstrings.
@@ -55,8 +55,14 @@ signal.
 
 A `TRACE=1 make eval`-style run (set the env var, then run the eval binary
 `HIL_Firmware/build/eval_lap`) prints a per-tick trace (waypoint, curvature,
-cross-track error, speed, steer, slip) — use it to localise where the car goes
-wide.
+cross-track error, speed, steer, slip) to localise where the car goes wide.
+
+Setting `PP_DEBUG=1` on the eval binary prints one `PP_RESULT` line per track
+build: centreline lap time, optimised lap time, the gain, passes used, and a
+`converged` flag (1 means coordinate descent refined to the step floor, 0 means
+it hit the pass cap first). A `PP_WARN` line fires if the optimised line is
+slower than the centreline or the search did not converge. Use it to check the
+racing-line optimiser after touching `path_planning.c` or `g_RACING_MARGIN`.
 
 ### Parameter sweeps
 
@@ -203,6 +209,15 @@ These are things that are easy to get wrong and slow to rediscover.
   steering state to reset (mean CTE ~0.16 m, a touch looser than the old LQR's
   ~0.09 m but 0 off-track and ~same lap time). `motion_control_reset()` clears
   only the progress index and throttle integrator.
+
+- **Per-wheel vertical load is computed in one shared place:**
+  `shared/load_transfer.h`. Both the vehicle model (`vehicle_model.c`) and the
+  ECU grip estimate (`grip_limits()` in `torque_vectoring.c`) call
+  `load_transfer(v, ax, ay, Fz)`, so the static split, aero downforce and
+  load-transfer formula cannot drift between the two sides. Each side still
+  computes its OWN `ax`/`ay` (the ECU estimates them from sensors, the model
+  knows them exactly), which is the intended HIL difference; only the load
+  FORMULA is unified. Do not re-inline this calculation.
 
 - **Torque vectoring acts during braking too.** The left/right bias depends only
   on yaw-rate error, not on the sign of the driver torque, so it is applied to

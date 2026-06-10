@@ -1,5 +1,6 @@
 #include "../include/torque_vectoring.h"
 #include "../../shared/vehicle_config.h"
+#include "../../shared/load_transfer.h"
 #include "../../shared/tunables.h"
 #include <math.h>
 
@@ -47,37 +48,12 @@ static void grip_limits(const SensorData *sensors, float grip[4])
     g_ax_filt += alpha * (ax - g_ax_filt);
     g_ay_filt += alpha * (ay - g_ay_filt);
 
-    const float g = 9.81f;
-
-    // static axle loads plus aero downforce
-    float q           = 0.5f * AIR_DENSITY * AERO_AREA * v * v; // aero downforce, 50/50 split
-    float F_downforce = CLA * q;
-
-    float Fz_front_axle = MASS_KG * g * (CG_TO_REAR_M / WHEELBASE_M) + F_downforce * 0.5f;
-    float Fz_rear_axle  = MASS_KG * g * (CG_TO_FRONT_M / WHEELBASE_M) + F_downforce * 0.5f;
-
-    // longitudinal weight transfer between axles
-    float dFz_long = g_ax_filt * MASS_KG * CG_HEIGHT_M / WHEELBASE_M;
-    Fz_front_axle -= dFz_long;
-    Fz_rear_axle += dFz_long;
-    if (Fz_front_axle < 50.0f) Fz_front_axle = 50.0f;
-    if (Fz_rear_axle < 50.0f) Fz_rear_axle = 50.0f;
-
-    // lateral weight transfer at each axle
-    float m_front       = MASS_KG * (CG_TO_REAR_M / WHEELBASE_M);
-    float m_rear        = MASS_KG * (CG_TO_FRONT_M / WHEELBASE_M);
-    float dFz_lat_front = m_front * g_ay_filt * CG_HEIGHT_M / TRACK_WIDTH_FRONT_M;
-    float dFz_lat_rear  = m_rear * g_ay_filt * CG_HEIGHT_M / TRACK_WIDTH_REAR_M;
-
+    // same per-wheel load model the vehicle uses, shared so the two cannot drift
     float Fz[4];
-    Fz[WHEEL_FL] = 0.5f * Fz_front_axle - dFz_lat_front;
-    Fz[WHEEL_FR] = 0.5f * Fz_front_axle + dFz_lat_front;
-    Fz[WHEEL_RL] = 0.5f * Fz_rear_axle - dFz_lat_rear;
-    Fz[WHEEL_RR] = 0.5f * Fz_rear_axle + dFz_lat_rear;
+    load_transfer(v, g_ax_filt, g_ay_filt, Fz);
 
     // do not subtract Fy here, the throttle controller already cuts for lateral load (double-count)
     for (int i = 0; i < 4; i++) {
-        if (Fz[i] < 25.0f) Fz[i] = 25.0f;
         float t = MU_GRIP * Fz[i] * TV_WHEEL_RADIUS_M / GEAR_RATIO;
         if (t > MAX_MOTOR_TORQUE_NM) t = MAX_MOTOR_TORQUE_NM;
         if (t < 1.0f) t = 1.0f;
