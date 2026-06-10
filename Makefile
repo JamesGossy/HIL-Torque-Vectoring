@@ -1,4 +1,28 @@
-export TMPDIR := /tmp
+# ---- Build temp directory (Windows/MSYS2 footgun fix) ----
+#
+# gcc's cc1/as write intermediate files (the .s, the .o temps) into a temp dir.
+# Two things bite on Windows and made builds fail intermittently with a bogus
+# exit 1 and NO diagnostic:
+#   1. MinGW gcc honours the Windows-style TMP/TEMP, NOT the POSIX TMPDIR, so the
+#      old `export TMPDIR := /tmp` here was silently ignored and gcc fell back to
+#      %TEMP% under the user profile.
+#   2. This repo lives under OneDrive, and %TEMP% is heavily scanned by Defender/
+#      OneDrive; the scanner races the assembler reading cc1's temp .s, so `as`
+#      intermittently "can't open" it and the whole compile fails with no message.
+# Fix: point all three temp vars at a fixed, local, NON-synced, low-scan dir
+# (C:\mk_tmp) and create it. Set both POSIX (TMPDIR) and Windows (TMP/TEMP) forms
+# so it works whether gcc reads one or the other. Override with
+# `make BUILD_TMP=/c/other/tmp` if C: is not writable. On Linux/CI this is just a
+# harmless extra tmp dir.
+BUILD_TMP ?= /c/mk_tmp
+BUILD_TMP_WIN := $(subst /c/,C:/,$(BUILD_TMP))
+export TMPDIR := $(BUILD_TMP)
+export TMP    := $(BUILD_TMP_WIN)
+export TEMP   := $(BUILD_TMP_WIN)
+
+# Create the temp dir before anything compiles (order-only-ish: a phony dep that
+# every build target can rely on having run, plus a belt-and-braces mkdir here).
+$(shell mkdir -p $(BUILD_TMP) 2>/dev/null)
 
 # This Makefile uses POSIX shell idioms (rm -rf, mkdir -p, the clang-format
 # detection below), so pin the shell to sh rather than let Windows make default
@@ -29,7 +53,7 @@ TEST_TV   = $(HIL_BUILD)/test_tv$(EXE_EXT)
 TEST_VM   = $(HIL_BUILD)/test_vehicle_model$(EXE_EXT)
 TEST_PP   = $(HIL_BUILD)/test_path_planning$(EXE_EXT)
 TEST_MC   = $(HIL_BUILD)/test_motion_control$(EXE_EXT)
-TEST_LQR  = $(HIL_BUILD)/test_lqr$(EXE_EXT)
+TEST_STEER = $(HIL_BUILD)/test_steer$(EXE_EXT)
 TEST_INT  = $(HIL_BUILD)/test_integration$(EXE_EXT)
 
 HIL_FLAGS = $(CFLAGS) \
@@ -76,15 +100,15 @@ FORMAT_SRCS   = $(wildcard HIL_Firmware/src/*.c HIL_Firmware/include/*.h \
                            shared/*.c shared/*.h tests/*.c tools/*.c)
 FORMAT_SRCS  := $(filter-out HIL_Firmware/include/track_data.h, $(FORMAT_SRCS))
 
-# Steering is the model-based LQR law (HIL_Firmware/src/lqr_steer.c); the tuned
-# gains are the in-source defaults (from the robustness-aware sweep, see
-# tools/tool_smart_sweep_lqr.py), so no -D overrides are needed for a clean lap.
+# Steering is a kinematic feedforward + Stanley law in motion_control.c (the old
+# lqr_steer.c is gone). The four runtime tunables are the in-source defaults in
+# shared/tunables.c (from tools/tool_smart_sweep_lqr.py), so no -D overrides are
+# needed for a clean lap.
 HIL_SRCS = HIL_Firmware/src/main.c \
            HIL_Firmware/src/vehicle_model.c \
            HIL_Firmware/src/track_parser.c \
            HIL_Firmware/src/path_planning.c \
            HIL_Firmware/src/motion_control.c \
-           HIL_Firmware/src/lqr_steer.c \
            ECU_Firmware/src/torque_vectoring.c \
            shared/tunables.c
 
@@ -101,12 +125,13 @@ MC_SRCS = tests/test_motion_control.c \
           HIL_Firmware/src/motion_control.c \
           HIL_Firmware/src/vehicle_model.c \
           HIL_Firmware/src/path_planning.c \
-          HIL_Firmware/src/lqr_steer.c \
           shared/tunables.c
 
-LQR_SRCS = tests/test_lqr.c \
-           HIL_Firmware/src/lqr_steer.c \
-           shared/tunables.c
+STEER_SRCS = tests/test_steer.c \
+             HIL_Firmware/src/motion_control.c \
+             HIL_Firmware/src/vehicle_model.c \
+             HIL_Firmware/src/path_planning.c \
+             shared/tunables.c
 
 TV_SRCS = tests/test_tv.c \
           ECU_Firmware/src/torque_vectoring.c \
@@ -119,7 +144,6 @@ INT_SRCS = tests/test_integration.c \
            HIL_Firmware/src/vehicle_model.c \
            HIL_Firmware/src/track_parser.c \
            HIL_Firmware/src/path_planning.c \
-           HIL_Firmware/src/lqr_steer.c \
            ECU_Firmware/src/torque_vectoring.c \
            shared/tunables.c
 
@@ -129,7 +153,6 @@ EVAL_SRCS = tools/tool_eval_lap.c \
             HIL_Firmware/src/vehicle_model.c \
             HIL_Firmware/src/track_parser.c \
             HIL_Firmware/src/path_planning.c \
-            HIL_Firmware/src/lqr_steer.c \
             ECU_Firmware/src/torque_vectoring.c \
             shared/tunables.c
 
@@ -139,7 +162,6 @@ PERF_SRCS = tools/tool_perf_sim.c \
             HIL_Firmware/src/vehicle_model.c \
             HIL_Firmware/src/track_parser.c \
             HIL_Firmware/src/path_planning.c \
-            HIL_Firmware/src/lqr_steer.c \
             ECU_Firmware/src/torque_vectoring.c \
             shared/tunables.c
 
@@ -175,7 +197,7 @@ test: $(TRACK_DATA) $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(TEST_VM) $(VM_SRCS) -lm && $(TEST_VM)
 	$(CC) $(HIL_FLAGS) -o $(TEST_PP) $(PP_SRCS) -lm && $(TEST_PP)
 	$(CC) $(HIL_FLAGS) -o $(TEST_MC) $(MC_SRCS) -lm && $(TEST_MC)
-	$(CC) $(HIL_FLAGS) -o $(TEST_LQR) $(LQR_SRCS) -lm && $(TEST_LQR)
+	$(CC) $(HIL_FLAGS) -o $(TEST_STEER) $(STEER_SRCS) -lm && $(TEST_STEER)
 	$(CC) $(HIL_FLAGS) -o $(TEST_INT) $(INT_SRCS) -lm && $(TEST_INT)
 
 run: all

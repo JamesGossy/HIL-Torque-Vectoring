@@ -110,7 +110,7 @@ static void test_brake_clamped(void)
     ASSERT(torque >= DRIVER_BRAKE_NM - 0.001f);
 }
 
-/* steering must be within ±MAX_STEER_RAD */
+/* steering must be within ±g_MAX_STEER_RAD */
 static void test_steer_clamped(void)
 {
     Track t = make_straight_track(50.0f, 2.5f);
@@ -120,8 +120,8 @@ static void test_steer_clamped(void)
     for (int i = 0; i < 20; i++)
         motion_control_update(&s, &t, NULL);
 
-    ASSERT(s.steering <= MAX_STEER_RAD + 0.001f);
-    ASSERT(s.steering >= -MAX_STEER_RAD - 0.001f);
+    ASSERT(s.steering <= g_MAX_STEER_RAD + 0.001f);
+    ASSERT(s.steering >= -g_MAX_STEER_RAD - 0.001f);
 }
 
 /* on-path car pointing straight: steering should remain near zero */
@@ -152,7 +152,7 @@ static void test_steer_slew_rate(void)
     Track t = make_straight_track(50.0f, 2.5f);
     /* large lateral offset forces the controller to want maximum steer */
     VehicleState s = make_state(0.0f, -3.0f, 0.0f, 10.0f);
-    float max_step = MAX_STEER_RATE_RADS * CONTROL_DT_S;
+    float max_step = g_MAX_STEER_RATE_RADS * CONTROL_DT_S;
 
     float prev_steer = s.steering;
     for (int i = 0; i < 10; i++) {

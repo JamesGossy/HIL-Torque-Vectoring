@@ -199,7 +199,7 @@ int main(void)
     stdin_setup();
 
     int tv_enabled   = 1;
-    float kp_yaw     = g_KP_YAW_DEFAULT;
+    float kp_yaw     = g_KP_YAW;
     int tick         = 0;
     int running      = 1;
     double sim_start = get_time_s();

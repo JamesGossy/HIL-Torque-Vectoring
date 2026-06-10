@@ -1,33 +1,39 @@
 #!/usr/bin/env python3
-"""Robustness probe for the LQR steering / speed / TV tuning. Perturbs the config
+"""Robustness probe for the steering / speed / TV tuning. Perturbs the config
 +/-pct one axis at a time and as combined jitter, reporting any that go
-off-track, so you can see how close a config sits to the off-track edge."""
+off-track, so you can see how close a config sits to the off-track edge.
+
+After the controller simplification there are only four runtime tunables, applied
+via TUNE_* env vars on a binary built ONCE (no recompile per candidate)."""
 import os, random, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "HIL_Firmware", "build", "eval_roblqr.exe")
 SRCS = ["tools/tool_eval_lap.c", "HIL_Firmware/src/motion_control.c",
         "HIL_Firmware/src/vehicle_model.c", "HIL_Firmware/src/track_parser.c",
-        "HIL_Firmware/src/path_planning.c", "HIL_Firmware/src/lqr_steer.c",
-        "ECU_Firmware/src/torque_vectoring.c"]
+        "HIL_Firmware/src/path_planning.c",
+        "ECU_Firmware/src/torque_vectoring.c", "shared/tunables.c"]
 INC = ["-I", "HIL_Firmware/include", "-I", "shared", "-I", "ECU_Firmware/include"]
 
-# Current in-source defaults (the clean ~25.8 s downforce-aware config).
-BEST = {
- "MAX_LATERAL_ACCEL_MS2":14.0433,"PP_GRIP_ACCEL":11.1584,"RACING_MARGIN":0.2686,
- "PP_MIN_RADIUS_M":6.5000,"GG_ACCEL_MS2":7.8831,"PLANNER_DOWNFORCE_FRAC":0.1085,
- "LAT_GRIP_REF_MS2":15.6526,
- "KP_YAW_DEFAULT":86.7214,"TV_KFF":12.4083,"TV_REAR_SHARE":0.6017,
- "LQR_Q_E1":10.1899,"LQR_Q_E1D":0.3000,"LQR_Q_E2":9.7728,"LQR_Q_E2D":0.1229,
- "LQR_R":3.8399,"LQR_KI":5.8300,"LQR_I_MAX":0.3350}
+# Current in-source defaults (shared/tunables.c). Perturbs the high-leverage
+# gains; add any TUNE_* gain to probe its sensitivity.
+BEST = {"GRIP_USE":0.90, "K_STANLEY":8.0, "K_DAMP":0.30, "RACING_MARGIN":0.40,
+        "PP_RADIUS_FACTOR":1.6, "MAX_STEER_RAD":1.7, "MAX_BRAKE_DECEL_MS2":5.6,
+        "SPEED_KP_NM":800.0, "KP_YAW":86.2440}
 NAMES = list(BEST)
 
+_built = [False]
+
 def ev(cfg):
-    defs = ["-D%s=%.5ff" % (n, cfg[n]) for n in NAMES]
-    if subprocess.run(["gcc","-std=c11","-O2",*INC,*defs,"-o",OUT,*SRCS,"-lm"],
-                      cwd=ROOT, capture_output=True).returncode != 0:
-        return None
-    r = subprocess.run([OUT], cwd=ROOT, capture_output=True, text=True)
+    if not _built[0]:
+        if subprocess.run(["gcc","-std=c11","-O2",*INC,"-o",OUT,*SRCS,"-lm"],
+                          cwd=ROOT, capture_output=True).returncode != 0:
+            return None
+        _built[0] = True
+    env = dict(os.environ)
+    for n in NAMES:
+        env["TUNE_%s" % n] = "%.6f" % cfg[n]
+    r = subprocess.run([OUT], cwd=ROOT, capture_output=True, text=True, env=env)
     for ln in r.stdout.splitlines():
         if ln.startswith("RESULT"):
             d={}

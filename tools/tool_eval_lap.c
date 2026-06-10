@@ -138,7 +138,7 @@ int main(void)
         sensors.wheel_speed[WHEEL_RL] = state.wheelspeed[WHEEL_RL] * R2W;
         sensors.wheel_speed[WHEEL_RR] = state.wheelspeed[WHEEL_RR] * R2W;
 
-        torque_vectoring_update(&sensors, dq, g_KP_YAW_DEFAULT, &torques);
+        torque_vectoring_update(&sensors, dq, g_KP_YAW, &torques);
         vehicle_model_update(&state, &torques, DT);
         track_update(&track, state.x, state.y);
 
