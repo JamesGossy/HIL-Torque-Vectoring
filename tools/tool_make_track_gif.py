@@ -213,9 +213,33 @@ def main():
         new_size = (target_w, int(frames[0].height * ratio))
         frames = [f.resize(new_size, Image.LANCZOS) for f in frames]
 
-    # one shared palette keeps delta compression small, per-frame palettes bloat the file
-    base_pal = frames[0].convert("P", palette=Image.ADAPTIVE, colors=64)
-    pal_frames = [f.quantize(palette=base_pal, dither=Image.NONE) for f in frames]
+    # One shared palette keeps delta compression small (per-frame palettes bloat the
+    # file). PIN the key colours first so small but important things, the red car
+    # above all, survive quantisation: a purely adaptive palette spends its slots on
+    # the big areas (asphalt, cones) and quantises the few red car pixels to the
+    # nearest greyish-green. We seed the exact UI colours, then fill the rest
+    # adaptively.
+    pinned = [
+        CAR_FILL, CAR_OUTLINE, TRAIL_COL, RACING_LINE,
+        CONE_BLUE, CONE_BLUE_EDGE, CONE_YELLOW, CONE_YELLOW_EDGE,
+        ASPHALT, BOUNDARY, VIEW_BG, BG,
+    ]
+    adaptive = frames[-1].convert("P", palette=Image.ADAPTIVE, colors=128)
+    adapt_rgb = adaptive.getpalette()[: 128 * 3]
+    adapt_cols = [tuple(adapt_rgb[i:i + 3]) for i in range(0, len(adapt_rgb), 3)]
+
+    pal_cols = list(dict.fromkeys(pinned))
+    for c in adapt_cols:
+        if c not in pal_cols and len(pal_cols) < 256:
+            pal_cols.append(c)
+    while len(pal_cols) < 256:
+        pal_cols.append((0, 0, 0))
+
+    flat = [v for c in pal_cols for v in c]
+    pal_img = Image.new("P", (1, 1))
+    pal_img.putpalette(flat)
+
+    pal_frames = [f.quantize(palette=pal_img, dither=Image.NONE) for f in frames]
     duration_ms = int(1000 / GIF_FPS)
     pal_frames[0].save(
         out_path,
