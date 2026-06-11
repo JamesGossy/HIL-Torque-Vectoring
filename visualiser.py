@@ -6,6 +6,14 @@ STATE line has 21 fields:
   STATE x y heading speed_kmh yaw_deg_s fl fr rl rr tv kp lap elapsed_s
         steering_rad slip_angle_rad desired_yaw_rad_s ax_ms2 ay_ms2 vy_ms
         target_speed_kmh
+
+The autonomous sim also streams, each display frame:
+  VISION est_x est_y est_heading range_m half_fov_rad   (SLAM pose + sensor FoV)
+  SLAMCONES <n> / SC x y colour ... / END_SLAMCONES      (discovered cones at
+        their SLAM-estimated positions; colour 0=blue/left, 1=yellow/right)
+True cone positions (streamed once at startup) are drawn grey; cones the car has
+discovered are overlaid coloured at the SLAM estimate, and the vision wedge shows
+where the car thinks it is looking.
 """
 
 import subprocess
@@ -84,6 +92,11 @@ CONE_YELLOW      = (255, 210,   0)
 CONE_YELLOW_EDGE = (255, 240, 120)
 CONE_ORANGE      = (255, 120,   0)
 
+CONE_UNSEEN      = ( 70,  70,  70)   # true cone position, not yet discovered
+CONE_UNSEEN_EDGE = (100, 100, 100)
+VISION_FILL      = ( 90, 200, 255)   # the car's vision wedge
+VISION_EDGE      = (140, 220, 255)
+
 RACING_LINE_COL  = (  0, 210, 255)   # optimal racing line
 
 
@@ -114,6 +127,12 @@ _TRACK_SCREEN_PTS = []   # cached track screen coords, set once in set_track_bou
 # World-space cone positions, kept for follow-cam reprojection each frame
 _LEFT_WORLD  = []
 _RIGHT_WORLD = []
+
+# Perception overlay, updated from the VISION / SLAMCONES stream each frame.
+# vision = (est_x, est_y, est_heading, range_m, half_fov_rad) or None
+_VISION       = None
+# discovered cones at their SLAM-estimated positions: list of (x, y, colour)
+_SLAM_CONES   = []
 
 
 # Compute the map transform and cache track screen coords from the waypoints.
@@ -314,13 +333,52 @@ def draw_track(surface):
 
     r = max(4, world_len_to_pixels(0.18))   # 4px min so cones stay visible on the map
 
-    for pt in left:   # blue cones
-        pygame.draw.circle(surface, CONE_BLUE,      pt, r)
-        pygame.draw.circle(surface, CONE_BLUE_EDGE, pt, r, 1)
+    # True cone positions are drawn GREY: this is ground truth the car has not yet
+    # discovered. Discovered cones are overlaid coloured at their SLAM estimate by
+    # draw_slam_cones(), so the grey dot acts as a "true position" ghost.
+    for pt in left + right:
+        pygame.draw.circle(surface, CONE_UNSEEN,      pt, r)
+        pygame.draw.circle(surface, CONE_UNSEEN_EDGE, pt, r, 1)
 
-    for pt in right:   # yellow cones
-        pygame.draw.circle(surface, CONE_YELLOW,      pt, r)
-        pygame.draw.circle(surface, CONE_YELLOW_EDGE, pt, r, 1)
+
+# Draw the car's vision wedge (field of view + range) at the SLAM-estimated pose.
+def draw_vision(surface):
+    if _VISION is None:
+        return
+    ex, ey, eh, rng, half_fov = _VISION
+    apex = world_to_screen(ex, ey)
+    n    = 14   # arc segments
+    pts  = [apex]
+    for i in range(n + 1):
+        a  = eh - half_fov + (2.0 * half_fov) * i / n
+        wx = ex + rng * math.cos(a)
+        wy = ey + rng * math.sin(a)
+        pts.append(world_to_screen(wx, wy))
+
+    # translucent fill via a temporary surface (polygon alpha)
+    if len(pts) >= 3:
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        minx, miny = min(xs), min(ys)
+        w, h = max(1, max(xs) - minx), max(1, max(ys) - miny)
+        veil = pygame.Surface((w, h), pygame.SRCALPHA)
+        loc  = [(x - minx, y - miny) for (x, y) in pts]
+        pygame.draw.polygon(veil, (*VISION_FILL, 40), loc)
+        pygame.draw.polygon(veil, (*VISION_EDGE, 120), loc, 1)
+        surface.blit(veil, (minx, miny))
+
+
+# Draw the discovered cones at their SLAM-estimated positions, coloured by side.
+def draw_slam_cones(surface):
+    r = max(4, world_len_to_pixels(0.18))
+    for (wx, wy, colour) in _SLAM_CONES:
+        pt = world_to_screen(wx, wy)
+        if colour == 0:
+            pygame.draw.circle(surface, CONE_BLUE,      pt, r)
+            pygame.draw.circle(surface, CONE_BLUE_EDGE, pt, r, 1)
+        else:
+            pygame.draw.circle(surface, CONE_YELLOW,      pt, r)
+            pygame.draw.circle(surface, CONE_YELLOW_EDGE, pt, r, 1)
 
 
 # Draw the trajectory trace behind the car, coloured by TV on/off.
@@ -807,7 +865,7 @@ def main():
         env=os.environ,
     )
 
-    global TRACK_WAYPOINTS
+    global TRACK_WAYPOINTS, _VISION, _SLAM_CONES
     waypoints   = []
     left_world  = []
     right_world = []
@@ -896,30 +954,55 @@ def main():
     gg_hist          = collections.deque(maxlen=GG_HISTORY_LEN)
     running          = True
     view_mode        = VIEW_MODE_MAP
+    cone_accum       = None   # accumulates an in-progress SLAMCONES block
 
     while running:
         clock.tick(60)
 
-        latest = None
+        new_state = False
         try:
             while True:
                 item = line_q.get_nowait()
                 if item is None:
                     running = False
                     break
-                latest = item
+                # Multi-line SLAMCONES block: accumulate until END_SLAMCONES.
+                if cone_accum is not None:
+                    if item == "END_SLAMCONES":
+                        _SLAM_CONES = cone_accum
+                        cone_accum  = None
+                    else:
+                        p = item.split()
+                        if len(p) == 4 and p[0] == "SC":
+                            try:
+                                cone_accum.append((float(p[1]), float(p[2]), int(p[3])))
+                            except ValueError:
+                                pass
+                    continue
+                if item.startswith("STATE"):
+                    if state.parse(item):
+                        new_state = True
+                elif item.startswith("VISION"):
+                    p = item.split()
+                    if len(p) == 6:
+                        try:
+                            _VISION = (float(p[1]), float(p[2]), float(p[3]),
+                                       float(p[4]), float(p[5]))
+                        except ValueError:
+                            pass
+                elif item.startswith("SLAMCONES"):
+                    cone_accum = []   # start a new block
         except queue.Empty:
             pass
 
-        if latest is not None:
-            if state.parse(latest):
-                actual_yaw_hist.append(math.radians(state.yaw_degs))
-                desired_yaw_hist.append(state.desired_yaw)
-                actual_spd_hist.append(state.speed_kmh)
-                target_spd_hist.append(state.target_kmh)
-                traj_deque.append((state.x, state.y, state.tv_enabled))
-                gg_hist.append((state.ax / 9.81, state.ay / 9.81))
-                lap_timer.update(state)
+        if new_state:
+            actual_yaw_hist.append(math.radians(state.yaw_degs))
+            desired_yaw_hist.append(state.desired_yaw)
+            actual_spd_hist.append(state.speed_kmh)
+            target_spd_hist.append(state.target_kmh)
+            traj_deque.append((state.x, state.y, state.tv_enabled))
+            gg_hist.append((state.ax / 9.81, state.ay / 9.81))
+            lap_timer.update(state)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -973,7 +1056,9 @@ def main():
 
         # Clip all track drawing to the map viewport so it cannot bleed into the data panel
         screen.set_clip(pygame.Rect(VIEW_X, VIEW_Y, VIEW_W, VIEW_H))
-        draw_track(screen)
+        draw_track(screen)            # grey true cones (undiscovered ghosts)
+        draw_vision(screen)           # the car's FoV wedge at the SLAM pose
+        draw_slam_cones(screen)       # discovered cones, coloured at SLAM estimates
         draw_racing_line(screen)
         draw_trajectory_trace(screen, traj_deque)
         draw_car(screen, state)

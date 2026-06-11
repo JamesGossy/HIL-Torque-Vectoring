@@ -55,6 +55,7 @@ TEST_PP   = $(HIL_BUILD)/test_path_planning$(EXE_EXT)
 TEST_MC   = $(HIL_BUILD)/test_motion_control$(EXE_EXT)
 TEST_STEER = $(HIL_BUILD)/test_steer$(EXE_EXT)
 TEST_INT  = $(HIL_BUILD)/test_integration$(EXE_EXT)
+TEST_SLAM = $(HIL_BUILD)/test_slam$(EXE_EXT)
 
 HIL_FLAGS = $(CFLAGS) \
             -I HIL_Firmware/include \
@@ -107,9 +108,13 @@ FORMAT_SRCS  := $(filter-out HIL_Firmware/include/track_data.h, $(FORMAT_SRCS))
 HIL_SRCS = HIL_Firmware/src/main.c \
            HIL_Firmware/src/vehicle_model.c \
            HIL_Firmware/src/track_parser.c \
-           HIL_Firmware/src/path_planning.c \
-           HIL_Firmware/src/motion_control.c \
+           HIL_Firmware/src/cone_sensor.c \
+           ECU_Firmware/src/path_planning.c \
+           ECU_Firmware/src/motion_control.c \
            ECU_Firmware/src/torque_vectoring.c \
+           ECU_Firmware/src/slam.c \
+           ECU_Firmware/src/online_planner.c \
+           ECU_Firmware/src/autopilot.c \
            shared/tunables.c
 
 HIL_OBJS = $(patsubst %.c, $(HIL_BUILD)/%.o, $(notdir $(HIL_SRCS)))
@@ -118,50 +123,58 @@ VM_SRCS = tests/test_vehicle_model.c \
           HIL_Firmware/src/vehicle_model.c
 
 PP_SRCS = tests/test_path_planning.c \
-          HIL_Firmware/src/path_planning.c \
+          ECU_Firmware/src/path_planning.c \
           shared/tunables.c
 
 MC_SRCS = tests/test_motion_control.c \
-          HIL_Firmware/src/motion_control.c \
+          ECU_Firmware/src/motion_control.c \
+          ECU_Firmware/src/path_planning.c \
           HIL_Firmware/src/vehicle_model.c \
-          HIL_Firmware/src/path_planning.c \
           shared/tunables.c
 
 STEER_SRCS = tests/test_steer.c \
-             HIL_Firmware/src/motion_control.c \
-             HIL_Firmware/src/vehicle_model.c \
-             HIL_Firmware/src/path_planning.c \
+             ECU_Firmware/src/motion_control.c \
+             ECU_Firmware/src/path_planning.c \
              shared/tunables.c
 
 TV_SRCS = tests/test_tv.c \
           ECU_Firmware/src/torque_vectoring.c \
           shared/tunables.c
 
+# SLAM test: ECU flags only, to also prove slam.c has no HIL dependency.
+SLAM_TEST_SRCS = tests/test_slam.c \
+                 ECU_Firmware/src/slam.c \
+                 shared/tunables.c
+
 # Integration test: the full driver -> ECU -> vehicle -> track loop, so it pulls
 # in every module the sim wires together.
 INT_SRCS = tests/test_integration.c \
-           HIL_Firmware/src/motion_control.c \
            HIL_Firmware/src/vehicle_model.c \
            HIL_Firmware/src/track_parser.c \
-           HIL_Firmware/src/path_planning.c \
+           ECU_Firmware/src/path_planning.c \
+           ECU_Firmware/src/motion_control.c \
            ECU_Firmware/src/torque_vectoring.c \
            shared/tunables.c
 
 EVAL     = $(HIL_BUILD)/eval_lap$(EXE_EXT)
 EVAL_SRCS = tools/tool_eval_lap.c \
-            HIL_Firmware/src/motion_control.c \
             HIL_Firmware/src/vehicle_model.c \
             HIL_Firmware/src/track_parser.c \
-            HIL_Firmware/src/path_planning.c \
+            HIL_Firmware/src/cone_sensor.c \
+            ECU_Firmware/src/path_planning.c \
+            ECU_Firmware/src/motion_control.c \
             ECU_Firmware/src/torque_vectoring.c \
+            ECU_Firmware/src/slam.c \
+            ECU_Firmware/src/online_planner.c \
+            ECU_Firmware/src/autopilot.c \
             shared/tunables.c
 
 PERF      = $(HIL_BUILD)/perf_sim$(EXE_EXT)
 PERF_SRCS = tools/tool_perf_sim.c \
-            HIL_Firmware/src/motion_control.c \
             HIL_Firmware/src/vehicle_model.c \
             HIL_Firmware/src/track_parser.c \
-            HIL_Firmware/src/path_planning.c \
+            ECU_Firmware/src/path_planning.c \
+            ECU_Firmware/src/motion_control.c \
             ECU_Firmware/src/torque_vectoring.c \
             shared/tunables.c
 
@@ -176,7 +189,10 @@ $(HIL_BUILD) $(ECU_BUILD):
 $(HIL_BUILD)/%.o: HIL_Firmware/src/%.c $(TRACK_DATA) | $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -c -o $@ $<
 
-$(HIL_BUILD)/torque_vectoring.o: ECU_Firmware/src/torque_vectoring.c | $(HIL_BUILD)
+# ECU-side sources (torque vectoring, plus the moved autonomy stack) linked into
+# the HIL sim. Compiled with HIL_FLAGS here; the ECU_OBJ target below re-checks
+# the boundary by compiling under ECU_FLAGS only.
+$(HIL_BUILD)/%.o: ECU_Firmware/src/%.c | $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -c -o $@ $<
 
 # Shared runtime tunables (g_* gains, env overrides). Lives in shared/, linked by
@@ -199,6 +215,7 @@ test: $(TRACK_DATA) $(HIL_BUILD)
 	$(CC) $(HIL_FLAGS) -o $(TEST_MC) $(MC_SRCS) -lm && $(TEST_MC)
 	$(CC) $(HIL_FLAGS) -o $(TEST_STEER) $(STEER_SRCS) -lm && $(TEST_STEER)
 	$(CC) $(HIL_FLAGS) -o $(TEST_INT) $(INT_SRCS) -lm && $(TEST_INT)
+	$(CC) $(ECU_FLAGS) -o $(TEST_SLAM) $(SLAM_TEST_SRCS) -lm && $(TEST_SLAM)
 
 run: all
 	TRACK=$(TRACK) $(HIL_SIM)
@@ -225,3 +242,4 @@ format:
 # Use in CI to keep the tree formatted.
 format-check:
 	"$(CLANG_FORMAT)" --dry-run --Werror $(FORMAT_SRCS)
+

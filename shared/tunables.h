@@ -35,6 +35,26 @@ extern float g_TV_I_MAX_FRAC;      /* integral bias cap as a fraction of motor p
 extern float g_TV_YAW_DEADBAND; /* sensor-noise floor, rad/s                     */
 extern float g_TV_K_US;         /* empirical understeer term (linear deriv ~0)   */
 
+/* ---- autonomy: cone sensor ---- */
+extern float g_SENSOR_RANGE_M;         /* max detection range, m                       */
+extern float g_SENSOR_FOV_RAD;         /* half field of view, rad                      */
+extern float g_SENSOR_RANGE_SIGMA_M;   /* range noise std, m (also EKF R)              */
+extern float g_SENSOR_BEARING_SIGMA_RAD; /* bearing noise std, rad (also EKF R)        */
+
+/* ---- autonomy: EKF-SLAM ---- */
+extern float g_SLAM_Q_POS;          /* process noise on position per tick, m^2      */
+extern float g_SLAM_Q_THETA;        /* process noise on heading per tick, rad^2     */
+extern float g_SLAM_GATE_CHI2;      /* Mahalanobis gate to associate (2-DoF)        */
+extern float g_SLAM_NEW_CHI2;       /* Mahalanobis floor to allow a new landmark    */
+extern float g_SLAM_NEW_MIN_DIST_M; /* Euclidean guard for a new landmark, m        */
+extern int g_SLAM_MIN_SIGHTINGS;    /* sightings before a landmark enters the map   */
+extern float g_SLAM_LOOP_RADIUS_M;  /* return-to-start radius for loop closure, m   */
+extern float g_SLAM_AMBIG_RATIO;    /* runner-up/best d2 ratio to accept a match    */
+
+/* ---- autonomy: mode and planner ---- */
+extern int g_AUTONOMY;             /* 0 = legacy ground-truth driver, 1 = SLAM     */
+extern float g_PHASE1_SPEED_CAP_MS; /* exploration-lap speed cap, m/s              */
+
 /* Apply any TUNE_<NAME> env overrides; call once at the top of main(). */
 void tunables_init_from_env(void);
 

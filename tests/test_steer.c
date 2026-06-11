@@ -8,7 +8,7 @@
 #include <math.h>
 #include <stdio.h>
 
-#include "../HIL_Firmware/include/motion_control.h"
+#include "../ECU_Firmware/include/motion_control.h"
 
 static int g_tests  = 0;
 static int g_passed = 0;

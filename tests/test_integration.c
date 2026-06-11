@@ -8,9 +8,33 @@
 
 #include "../HIL_Firmware/include/vehicle_model.h"
 #include "../HIL_Firmware/include/track_parser.h"
-#include "../HIL_Firmware/include/motion_control.h"
 #include "../shared/tv_interface.h"
 #include "../ECU_Firmware/include/torque_vectoring.h"
+#include "../ECU_Firmware/include/motion_control.h"
+#include "../ECU_Firmware/include/ecu_map.h"
+
+/* Copy a ground-truth Track into the ECU map type for the legacy driver. */
+static void track_to_ecu_map(const Track *t, EcuMap *m)
+{
+    int i;
+    m->count         = t->count;
+    m->current_index = t->current_index;
+    m->lap_count     = t->lap_count;
+    for (i = 0; i < t->count; i++) {
+        m->points[i].x = t->points[i].x;
+        m->points[i].y = t->points[i].y;
+    }
+    m->left_count = t->left_count;
+    for (i = 0; i < t->left_count; i++) {
+        m->left_cones[i].x = t->left_cones[i].x;
+        m->left_cones[i].y = t->left_cones[i].y;
+    }
+    m->right_count = t->right_count;
+    for (i = 0; i < t->right_count; i++) {
+        m->right_cones[i].x = t->right_cones[i].x;
+        m->right_cones[i].y = t->right_cones[i].y;
+    }
+}
 
 static int g_tests  = 0;
 static int g_passed = 0;
@@ -44,7 +68,13 @@ static void pack_sensors(const VehicleState *s, float driver_torque, SensorData 
 /* Advance the full loop one tick, with TV on or off, as main.c does. */
 static float step(VehicleState *state, Track *track, int tv_enabled)
 {
-    float driver_torque = motion_control_update(state, track, NULL);
+    EcuMap map;
+    track_to_ecu_map(track, &map);
+    float steer_cmd = state->steering;
+    CtrlPose pose   = { state->x, state->y, state->heading, state->velocity, state->yaw_rate,
+        state->ay_filt, state->steering };
+    float driver_torque = motion_control_update(&pose, &map, &steer_cmd, NULL);
+    state->steering     = steer_cmd;
 
     SensorData sensors = { 0 };
     pack_sensors(state, driver_torque, &sensors);
@@ -150,7 +180,12 @@ static void test_tv_on_off_torque_valid(void)
     for (int i = 0; i < 200; i++)
         step(&state, &track, 1); // into a corner
 
-    float driver       = motion_control_update(&state, &track, NULL);
+    EcuMap map2;
+    track_to_ecu_map(&track, &map2);
+    float steer2    = state.steering;
+    CtrlPose pose2  = { state.x, state.y, state.heading, state.velocity, state.yaw_rate,
+        state.ay_filt, state.steering };
+    float driver    = motion_control_update(&pose2, &map2, &steer2, NULL);
     SensorData sensors = { 0 };
     pack_sensors(&state, driver, &sensors);
 

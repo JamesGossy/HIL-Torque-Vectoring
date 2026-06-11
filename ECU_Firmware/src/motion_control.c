@@ -1,6 +1,8 @@
-// The driver. Steers with a kinematic feedforward plus Stanley feedback, plans
-// corner speed with a two-pass friction-circle planner, and sets driver torque.
-// Gains are g_* globals in shared/tunables.c; physical constants in vehicle_config.h.
+// The driver, now on the ECU. Steers with a kinematic feedforward plus Stanley
+// feedback, plans corner speed with a two-pass friction-circle planner, and sets
+// driver torque. It drives on an estimated pose (CtrlPose) and the ECU's own map
+// (EcuMap), never the HIL vehicle state. Gains are g_* globals in
+// shared/tunables.c; physical constants in vehicle_config.h.
 
 #include "../include/motion_control.h"
 #include "../../shared/grip_model.h"
@@ -93,12 +95,12 @@ static float brake_decel_avail(float v, float kappa)
 }
 
 // Set a speed cap per upcoming waypoint from curvature, then back-propagate braking under the friction circle.
-static float plan_target_speed(const VehicleState *state, const Track *track, int start_idx)
+static float plan_target_speed(const CtrlPose *pose, const EcuMap *map, int start_idx)
 {
     float v_limit[SPEED_PLAN_STEPS_CAP];
     float seg_len[SPEED_PLAN_STEPS_CAP]; // distance from point i to i+1
     float seg_k[SPEED_PLAN_STEPS_CAP];   // curvature at point i, for the GG budget
-    int count    = track->count;
+    int count    = map->count;
     int n        = 0;
     float path_s = 0.0f;
     int i;
@@ -110,9 +112,9 @@ static float plan_target_speed(const VehicleState *state, const Track *track, in
         for (int d = 1; d <= 3; d++) {
             int cprev = (start_idx + i - d + count) % count;
             int cnext = (start_idx + i + d) % count;
-            float k   = menger_curvature(track->points[cprev].x, track->points[cprev].y,
-                track->points[ccur].x, track->points[ccur].y, track->points[cnext].x,
-                track->points[cnext].y);
+            float k   = menger_curvature(map->points[cprev].x, map->points[cprev].y,
+                map->points[ccur].x, map->points[ccur].y, map->points[cnext].x,
+                map->points[cnext].y);
             if (k > kappa) kappa = k;
         }
         int cnext = (start_idx + i + 1) % count;
@@ -121,8 +123,8 @@ static float plan_target_speed(const VehicleState *state, const Track *track, in
         v_limit[n]   = apex_speed(budget, kappa, TARGET_SPEED_MS);
         seg_k[n]     = kappa;
 
-        float dx   = track->points[cnext].x - track->points[ccur].x;
-        float dy   = track->points[cnext].y - track->points[ccur].y;
+        float dx   = map->points[cnext].x - map->points[ccur].x;
+        float dy   = map->points[cnext].y - map->points[ccur].y;
         seg_len[n] = sqrtf(dx * dx + dy * dy);
         n++;
 
@@ -143,8 +145,8 @@ static float plan_target_speed(const VehicleState *state, const Track *track, in
     // Final step: braking from the car to the first upcoming waypoint.
     {
         int wp0       = start_idx % count;
-        float ddx     = track->points[wp0].x - state->x;
-        float ddy     = track->points[wp0].y - state->y;
+        float ddx     = map->points[wp0].x - pose->x;
+        float ddy     = map->points[wp0].y - pose->y;
         float d_now   = sqrtf(ddx * ddx + ddy * ddy);
         float a_brake = brake_decel_avail(v_sweep, seg_k[0]);
         float v_now   = sqrtf(v_sweep * v_sweep + 2.0f * a_brake * d_now);
@@ -156,10 +158,9 @@ static float plan_target_speed(const VehicleState *state, const Track *track, in
 
 
 // Find the racing-line segment nearest (px, py) near center_idx; returns its start index and writes signed cross-track error to *out_cte.
-static int find_nearest_segment(
-    const Track *track, float px, float py, int center_idx, float *out_cte)
+static int find_nearest_segment(const EcuMap *map, float px, float py, int center_idx, float *out_cte)
 {
-    int count      = track->count;
+    int count      = map->count;
     int best       = center_idx;
     float best_d2  = 1e18f;
     float best_cte = 0.0f;
@@ -169,9 +170,9 @@ static int find_nearest_segment(
         int i0 = ((center_idx + k) % count + count) % count;
         int i1 = (i0 + 1) % count;
 
-        float ax = track->points[i0].x, ay = track->points[i0].y;
-        float ex   = track->points[i1].x - ax;
-        float ey   = track->points[i1].y - ay;
+        float ax = map->points[i0].x, ay = map->points[i0].y;
+        float ex   = map->points[i1].x - ax;
+        float ey   = map->points[i1].y - ay;
         float len2 = ex * ex + ey * ey;
         if (len2 < 1e-6f) continue;
 
@@ -198,9 +199,9 @@ static int find_nearest_segment(
 
 
 // Max curvature (1/m) over the waypoints within span metres ahead of start_idx.
-static float lookahead_curvature(const Track *track, int start_idx, float span)
+static float lookahead_curvature(const EcuMap *map, int start_idx, float span)
 {
-    int count  = track->count;
+    int count  = map->count;
     float acc  = 0.0f;
     float kmax = 0.0f;
     int i;
@@ -210,14 +211,14 @@ static float lookahead_curvature(const Track *track, int start_idx, float span)
         for (int d = 1; d <= 3; d++) {
             int cprev = (start_idx + i - d + count) % count;
             int cnext = (start_idx + i + d) % count;
-            float k   = menger_curvature(track->points[cprev].x, track->points[cprev].y,
-                track->points[ccur].x, track->points[ccur].y, track->points[cnext].x,
-                track->points[cnext].y);
+            float k   = menger_curvature(map->points[cprev].x, map->points[cprev].y,
+                map->points[ccur].x, map->points[ccur].y, map->points[cnext].x,
+                map->points[cnext].y);
             if (k > kmax) kmax = k;
         }
         int nxt  = (start_idx + i + 1) % count;
-        float dx = track->points[nxt].x - track->points[ccur].x;
-        float dy = track->points[nxt].y - track->points[ccur].y;
+        float dx = map->points[nxt].x - map->points[ccur].x;
+        float dy = map->points[nxt].y - map->points[ccur].y;
         acc += sqrtf(dx * dx + dy * dy);
         if (acc > span) break;
     }
@@ -225,7 +226,7 @@ static float lookahead_curvature(const Track *track, int start_idx, float span)
 }
 
 
-static int s_path_idx         = -1;    // progress index, -1 means uninitialised; independent of track->current_index
+static int s_path_idx         = -1;    // progress index, -1 means uninitialised; independent of map->current_index
 static float s_speed_integral = 0.0f;  // throttle integral state, Nm
 
 // Reset the driver's internal state before an independent run.
@@ -237,19 +238,20 @@ void motion_control_reset(void)
 
 
 // Run one control tick: compute steering, plan target speed, and return driver torque.
-float motion_control_update(VehicleState *state, const Track *track, float *out_target_speed)
+float motion_control_update(
+    const CtrlPose *pose, const EcuMap *map, float *out_steering_rad, float *out_target_speed)
 {
-    int count = track->count;
-    float vx  = state->velocity;
+    int count = map->count;
+    float vx  = pose->vx;
 
-    if (s_path_idx < 0 || s_path_idx >= count) s_path_idx = track->current_index;
+    if (s_path_idx < 0 || s_path_idx >= count) s_path_idx = map->current_index;
 
     // 1. project the front axle onto the racing line, read cross-track error, advance progress index
-    float fa_x = state->x + CG_TO_FRONT_M * cosf(state->heading);
-    float fa_y = state->y + CG_TO_FRONT_M * sinf(state->heading);
+    float fa_x = pose->x + CG_TO_FRONT_M * cosf(pose->heading);
+    float fa_y = pose->y + CG_TO_FRONT_M * sinf(pose->heading);
 
     float cte;
-    int i0 = find_nearest_segment(track, fa_x, fa_y, s_path_idx, &cte);
+    int i0 = find_nearest_segment(map, fa_x, fa_y, s_path_idx, &cte);
 
     s_path_idx = i0;
 
@@ -258,17 +260,17 @@ float motion_control_update(VehicleState *state, const Track *track, float *out_
     {
         int i1   = (i0 + 1) % count;
         float ph = atan2f(
-            track->points[i1].y - track->points[i0].y, track->points[i1].x - track->points[i0].x);
-        float e2 = wrap_pi(state->heading - ph);
+            map->points[i1].y - map->points[i0].y, map->points[i1].x - map->points[i0].x);
+        float e2 = wrap_pi(pose->heading - ph);
         float e1 = -cte; // error model takes +e1 to the left, cte is +ve when right
-        float kp = lookahead_curvature(track, i0, 1.0f); // curvature at car
+        float kp = lookahead_curvature(map, i0, 1.0f); // curvature at car
         int i2    = (i0 + 2) % count; // sign of curvature from heading change across the segment, + when turning left
         float ph2 = atan2f(
-            track->points[i2].y - track->points[i1].y, track->points[i2].x - track->points[i1].x);
+            map->points[i2].y - map->points[i1].y, map->points[i2].x - map->points[i1].x);
         float dpsi         = wrap_pi(ph2 - ph);
         float kappa_signed = (dpsi >= 0.0f ? kp : -kp);
 
-        steer = steer_command(vx, e1, e2, state->yaw_rate, kappa_signed);
+        steer = steer_command(vx, e1, e2, pose->yaw_rate, kappa_signed);
     }
 
     if (steer > g_MAX_STEER_RAD) steer = g_MAX_STEER_RAD;
@@ -277,15 +279,15 @@ float motion_control_update(VehicleState *state, const Track *track, float *out_
     // Slew-rate limit: cap how far the commanded angle moves in one tick.
     {
         float max_step = g_MAX_STEER_RATE_RADS * CONTROL_DT_S;
-        float dsteer   = steer - state->steering;
-        if (dsteer > max_step) steer = state->steering + max_step;
-        if (dsteer < -max_step) steer = state->steering - max_step;
+        float dsteer   = steer - pose->steering;
+        if (dsteer > max_step) steer = pose->steering + max_step;
+        if (dsteer < -max_step) steer = pose->steering - max_step;
     }
 
-    state->steering = steer;
+    if (out_steering_rad) *out_steering_rad = steer;
 
     // 3. two-pass speed planner: forward apex caps then backward brake propagation
-    float target_speed = plan_target_speed(state, track, s_path_idx);
+    float target_speed = plan_target_speed(pose, map, s_path_idx);
 
     if (out_target_speed) *out_target_speed = target_speed;
 
@@ -295,13 +297,13 @@ float motion_control_update(VehicleState *state, const Track *track, float *out_
     // 4. throttle or brake torque demand
     if (speed_error >= 0.0f) {
         // Traction circle: cut throttle by lateral grip in use so the car powers up only as the corner opens. Uses lagged ay_filt.
-        float lat_ratio = fabsf(state->ay_filt) / peak_lat(vx);
+        float lat_ratio = fabsf(pose->ay_filt) / peak_lat(vx);
         if (lat_ratio > 1.0f) lat_ratio = 1.0f;
         float grip_factor = sqrtf(1.0f - lat_ratio * lat_ratio);
 
         // Steering-saturation cut: fade throttle from g_STEER_SAT_FRAC of lock to zero near full lock.
         float steer_factor = 1.0f;
-        float steer_frac   = fabsf(state->steering) / g_MAX_STEER_RAD;
+        float steer_frac   = fabsf(steer) / g_MAX_STEER_RAD;
         if (steer_frac > g_STEER_SAT_FRAC) {
             float over = (steer_frac - g_STEER_SAT_FRAC) / (1.0f - g_STEER_SAT_FRAC);
             if (over > 1.0f) over = 1.0f;

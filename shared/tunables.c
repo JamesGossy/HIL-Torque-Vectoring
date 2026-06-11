@@ -37,6 +37,26 @@ float g_TV_I_MAX_FRAC      = 0.511f;   // integral bias cap as a fraction of mot
 float g_TV_YAW_DEADBAND = 0.03f; // sensor-noise floor, rad/s
 float g_TV_K_US         = 0.06f; // empirical understeer term, linear deriv ~0
 
+/* ---- autonomy: cone sensor ---- */
+float g_SENSOR_RANGE_M           = 12.0f;
+float g_SENSOR_FOV_RAD           = 1.2f;   // ~69 deg half-angle
+float g_SENSOR_RANGE_SIGMA_M     = 0.10f;
+float g_SENSOR_BEARING_SIGMA_RAD = 0.02f;
+
+/* ---- autonomy: EKF-SLAM ---- */
+float g_SLAM_Q_POS          = 0.0004f; // per-tick, 100 Hz
+float g_SLAM_Q_THETA        = 0.0001f;
+float g_SLAM_GATE_CHI2      = 5.99f;   // chi2 95% for 2 DoF
+float g_SLAM_NEW_CHI2       = 16.0f;
+float g_SLAM_NEW_MIN_DIST_M = 1.5f;
+int g_SLAM_MIN_SIGHTINGS    = 3;
+float g_SLAM_LOOP_RADIUS_M  = 5.0f;
+float g_SLAM_AMBIG_RATIO    = 4.0f; // runner-up d2 must exceed best*this to accept
+
+/* ---- autonomy: mode and planner ---- */
+int g_AUTONOMY              = 0;
+float g_PHASE1_SPEED_CAP_MS = 6.0f;
+
 // Read a float from env var name, or fallback if unset or unparseable.
 static float getenvf(const char *name, float fallback)
 {
@@ -89,4 +109,21 @@ void tunables_init_from_env(void)
     g_TV_KD_FRAC         = getenvf("TUNE_TV_KD_FRAC", g_TV_KD_FRAC);
     g_TV_KFF_FRAC        = getenvf("TUNE_TV_KFF_FRAC", g_TV_KFF_FRAC);
     g_TV_I_MAX_FRAC      = getenvf("TUNE_TV_I_MAX_FRAC", g_TV_I_MAX_FRAC);
+
+    g_SENSOR_RANGE_M           = getenvf("TUNE_SENSOR_RANGE_M", g_SENSOR_RANGE_M);
+    g_SENSOR_FOV_RAD           = getenvf("TUNE_SENSOR_FOV_RAD", g_SENSOR_FOV_RAD);
+    g_SENSOR_RANGE_SIGMA_M     = getenvf("TUNE_SENSOR_RANGE_SIGMA_M", g_SENSOR_RANGE_SIGMA_M);
+    g_SENSOR_BEARING_SIGMA_RAD = getenvf("TUNE_SENSOR_BEARING_SIGMA_RAD", g_SENSOR_BEARING_SIGMA_RAD);
+
+    g_SLAM_Q_POS          = getenvf("TUNE_SLAM_Q_POS", g_SLAM_Q_POS);
+    g_SLAM_Q_THETA        = getenvf("TUNE_SLAM_Q_THETA", g_SLAM_Q_THETA);
+    g_SLAM_GATE_CHI2      = getenvf("TUNE_SLAM_GATE_CHI2", g_SLAM_GATE_CHI2);
+    g_SLAM_NEW_CHI2       = getenvf("TUNE_SLAM_NEW_CHI2", g_SLAM_NEW_CHI2);
+    g_SLAM_NEW_MIN_DIST_M = getenvf("TUNE_SLAM_NEW_MIN_DIST_M", g_SLAM_NEW_MIN_DIST_M);
+    g_SLAM_MIN_SIGHTINGS  = getenvi_clamped("TUNE_SLAM_MIN_SIGHTINGS", g_SLAM_MIN_SIGHTINGS, 1, 50);
+    g_SLAM_LOOP_RADIUS_M  = getenvf("TUNE_SLAM_LOOP_RADIUS_M", g_SLAM_LOOP_RADIUS_M);
+    g_SLAM_AMBIG_RATIO    = getenvf("TUNE_SLAM_AMBIG_RATIO", g_SLAM_AMBIG_RATIO);
+
+    g_AUTONOMY              = getenvi_clamped("TUNE_AUTONOMY", g_AUTONOMY, 0, 1);
+    g_PHASE1_SPEED_CAP_MS   = getenvf("TUNE_PHASE1_SPEED_CAP_MS", g_PHASE1_SPEED_CAP_MS);
 }

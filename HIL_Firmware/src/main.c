@@ -14,10 +14,37 @@
 
 #include "../include/vehicle_model.h"
 #include "../include/track_parser.h"
-#include "../include/motion_control.h"
 #include "../../shared/tv_interface.h"
 #include "../../shared/tunables.h"
 #include "../../ECU_Firmware/include/torque_vectoring.h"
+#include "../../ECU_Firmware/include/motion_control.h"
+#include "../../ECU_Firmware/include/ecu_map.h"
+#include "../../ECU_Firmware/include/autopilot.h"
+#include "../../ECU_Firmware/include/slam.h"
+#include "../include/cone_sensor.h"
+
+// Copy a ground-truth Track into the ECU's map type for the legacy (non-SLAM) driver.
+static void track_to_ecu_map(const Track *t, EcuMap *m)
+{
+    int i;
+    m->count         = t->count;
+    m->current_index = t->current_index;
+    m->lap_count     = t->lap_count;
+    for (i = 0; i < t->count; i++) {
+        m->points[i].x = t->points[i].x;
+        m->points[i].y = t->points[i].y;
+    }
+    m->left_count = t->left_count;
+    for (i = 0; i < t->left_count; i++) {
+        m->left_cones[i].x = t->left_cones[i].x;
+        m->left_cones[i].y = t->left_cones[i].y;
+    }
+    m->right_count = t->right_count;
+    for (i = 0; i < t->right_count; i++) {
+        m->right_cones[i].x = t->right_cones[i].x;
+        m->right_cones[i].y = t->right_cones[i].y;
+    }
+}
 
 /*
  * main.c
@@ -128,6 +155,7 @@ static double get_time_s(void)
 int main(void)
 {
     Track track;
+    EcuMap ecu_map;
     VehicleState state;
     WheelTorques torques = { 0 };
     SensorData sensors   = { 0 };
@@ -136,6 +164,7 @@ int main(void)
     tunables_init_from_env();
 
     track_init(&track);
+    track_to_ecu_map(&track, &ecu_map); // legacy driver maps over the ground-truth track
 
     if (track.count < 2) {
         fprintf(stderr, "track_init produced fewer than 2 waypoints - cannot run\n");
@@ -150,6 +179,8 @@ int main(void)
 
     motion_control_reset();    // clear stale static state from any prior run
     torque_vectoring_reset();
+    cone_sensor_reset();
+    autopilot_init(state.x, state.y, state.heading); // the sim drives autonomously
 
     printf("TRACK %d\n", track.count); // print track and cones for the visualiser
     for (int i = 0; i < track.count; i++) {
@@ -191,27 +222,29 @@ int main(void)
         next_tick += DT;
         tick++;
 
-        float target_speed  = 0.0f; // motion control
-        float driver_torque = motion_control_update(&state, &track, &target_speed);
-
-        sensors.yaw_rate       = state.yaw_rate; // pack sensor data
+        // pack proprioceptive sensors and the simulated cone scan (from the
+        // current true pose); the autopilot consumes both
+        sensors.yaw_rate       = state.yaw_rate;
         sensors.velocity       = state.velocity;
         sensors.steering_angle = state.steering;
-        sensors.driver_torque  = driver_torque;
 
-        // convert motor-shaft RPM to wheel rad/s for the sensor bus
         const float RPM_TO_WHEEL_RADS = (2.0f * 3.14159265358979f) / (GEAR_RATIO * 60.0f);
         sensors.wheel_speed[WHEEL_FL] = state.wheelspeed[WHEEL_FL] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_FR] = state.wheelspeed[WHEEL_FR] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_RL] = state.wheelspeed[WHEEL_RL] * RPM_TO_WHEEL_RADS;
         sensors.wheel_speed[WHEEL_RR] = state.wheelspeed[WHEEL_RR] * RPM_TO_WHEEL_RADS;
+        cone_sensor_scan(&track, state.x, state.y, state.heading, &sensors.scan);
 
-        if (tv_enabled) { // ECU
-            torque_vectoring_update(&sensors, driver_torque, kp_yaw, &torques);
-        } else {
-            float base = driver_torque * 0.25f; // even motor split, model applies GEAR_RATIO so do not multiply here
-            torques.fl = torques.fr = torques.rl = torques.rr = base;
-        }
+        // autonomous ECU: SLAM -> plan -> control -> torque vectoring (TV is
+        // always inside the autopilot now; the tv_enabled flag only labels the HUD)
+        DriveCommand cmd = { 0 };
+        autopilot_update(&sensors, DT, &cmd);
+        state.steering = cmd.steering_rad; // HIL applies the command to the plant
+        torques        = cmd.torques;
+
+        float target_speed = 0.0f;
+        (void)kp_yaw;
+        (void)ecu_map;
 
         vehicle_model_update(&state, &torques, DT); // advance physics
 
@@ -229,13 +262,30 @@ int main(void)
                 torques.fl, torques.fr, torques.rl, torques.rr, tv_enabled, kp_yaw, track.lap_count,
                 elapsed, state.steering, state.slip_angle, desired_yaw_rate, state.ax, state.ay,
                 state.vy, target_speed * 3.6f);
+
+            // VISION: estimated pose + sensor FoV so the visualiser can draw the
+            // vision wedge where the CAR THINKS it is (SLAM pose), not ground truth.
+            float ex, ey, eh;
+            autopilot_get_pose(&ex, &ey, &eh);
+            printf("VISION %.3f %.3f %.4f %.3f %.4f\n", ex, ey, eh, g_SENSOR_RANGE_M,
+                g_SENSOR_FOV_RAD);
+
+            // SLAMCONES: the cones the car has discovered, at their SLAM-estimated
+            // positions, with colour. The visualiser greys out the rest.
+            const SlamState *sl = autopilot_slam();
+            printf("SLAMCONES %d\n", sl->n_land);
+            for (int li = 0; li < sl->n_land; li++) {
+                int slot = sl->land[li].slot;
+                printf("SC %.3f %.3f %d\n", sl->mu[slot], sl->mu[slot + 1], sl->land[li].color);
+            }
+            printf("END_SLAMCONES\n");
             fflush(stdout);
         }
 
-        int cmd = poll_stdin(); // commands from stdin
+        int key = poll_stdin(); // commands from stdin
 
-        if (cmd != -1) {
-            switch (cmd) {
+        if (key != -1) {
+            switch (key) {
             case 't':
             case 'T':
                 tv_enabled = !tv_enabled;

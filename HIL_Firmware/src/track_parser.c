@@ -1,6 +1,7 @@
 #include "../include/track_parser.h"
-#include "../include/path_planning.h"
 #include "../include/track_data.h" // generated from the track YAML by tools/gen_tracks.py
+#include "../../ECU_Firmware/include/path_planning.h"
+#include "../../ECU_Firmware/include/ecu_map.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -51,7 +52,28 @@ void track_init(Track *track)
     }
     track->right_count = (layout->right_count < MAX_CONES) ? layout->right_count : MAX_CONES;
 
-    path_plan(track);
+    // The racing-line planner lives on the ECU now and works on an EcuMap, so build
+    // the line there and copy the waypoints back into the Track for the visualiser
+    // and scoring. The legacy driver gets the same line via its own track_to_ecu_map.
+    static EcuMap m;
+    m.left_count = track->left_count;
+    for (i = 0; i < track->left_count; i++) {
+        m.left_cones[i].x = track->left_cones[i].x;
+        m.left_cones[i].y = track->left_cones[i].y;
+    }
+    m.right_count = track->right_count;
+    for (i = 0; i < track->right_count; i++) {
+        m.right_cones[i].x = track->right_cones[i].x;
+        m.right_cones[i].y = track->right_cones[i].y;
+    }
+
+    path_plan(&m);
+
+    track->count = (m.count < MAX_WAYPOINTS) ? m.count : MAX_WAYPOINTS;
+    for (i = 0; i < track->count; i++) {
+        track->points[i].x = m.points[i].x;
+        track->points[i].y = m.points[i].y;
+    }
 }
 
 

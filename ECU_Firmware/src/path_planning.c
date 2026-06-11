@@ -9,16 +9,16 @@
 /* Builds the racing line: detect gates, resample the centreline, then bend it
  * within the corridor to minimise lap time. */
 
-static float left_x[MAX_CONES], left_y[MAX_CONES];
-static float right_x[MAX_CONES], right_y[MAX_CONES];
+static float left_x[ECU_MAX_CONES], left_y[ECU_MAX_CONES];
+static float right_x[ECU_MAX_CONES], right_y[ECU_MAX_CONES];
 
 
 #define PP_MAX_GATES     400
 #define MAX_GATE_WIDTH_M 10.0f /* reject pairs wider than this */
 
 typedef struct {
-    TrackPoint left;
-    TrackPoint right;
+    MapPoint left;
+    MapPoint right;
 } Gate;
 
 static Gate pp_gates[PP_MAX_GATES];
@@ -28,7 +28,7 @@ static int pp_n_gates;
 static void extract_gates(int n_left, int n_right)
 {
     int i, j;
-    int nearest_right[MAX_CONES];
+    int nearest_right[ECU_MAX_CONES];
     float dx, dy, d, best_d;
     float max_w2 = MAX_GATE_WIDTH_M * MAX_GATE_WIDTH_M;
 
@@ -71,12 +71,12 @@ static float cl_x[PP_MAX_GATES];
 static float cl_y[PP_MAX_GATES];
 static float cl_h[PP_MAX_GATES]; /* corridor half-width */
 
-static float rs_x[MAX_WAYPOINTS];
-static float rs_y[MAX_WAYPOINTS];
-static float rs_h[MAX_WAYPOINTS];   /* half-width */
-static float rs_nx[MAX_WAYPOINTS];  /* unit track normal */
-static float rs_ny[MAX_WAYPOINTS];
-static float rs_off[MAX_WAYPOINTS]; /* lateral offset along the normal */
+static float rs_x[ECU_MAX_WAYPOINTS];
+static float rs_y[ECU_MAX_WAYPOINTS];
+static float rs_h[ECU_MAX_WAYPOINTS];   /* half-width */
+static float rs_nx[ECU_MAX_WAYPOINTS];  /* unit track normal */
+static float rs_ny[ECU_MAX_WAYPOINTS];
+static float rs_off[ECU_MAX_WAYPOINTS]; /* lateral offset along the normal */
 static int rs_n;
 
 /* Build the centreline (gate midpoints and half-widths) from the gates. */
@@ -109,7 +109,7 @@ static void resample_centreline(void)
     /* pick point count and uniform step */
     int m = (int)(total / RESAMPLE_SPACING_M + 0.5f);
     if (m < 8) m = 8;
-    if (m > MAX_WAYPOINTS) m = MAX_WAYPOINTS;
+    if (m > ECU_MAX_WAYPOINTS) m = ECU_MAX_WAYPOINTS;
     float step = total / (float)m;
 
     int seg       = 0; /* O(m*g) re-walk from segment 0 per point, fine at track sizes */
@@ -220,9 +220,9 @@ static float line_curvature(int i, int n)
     return 2.0f * crs / (ab * bc * ca);
 }
 
-static float lt_ds[MAX_WAYPOINTS]; /* segment length i -> i+1, m */
-static float lt_v[MAX_WAYPOINTS];  /* speed profile at point i, m/s */
-static float lt_k[MAX_WAYPOINTS];  /* line curvature at point i, 1/m */
+static float lt_ds[ECU_MAX_WAYPOINTS]; /* segment length i -> i+1, m */
+static float lt_v[ECU_MAX_WAYPOINTS];  /* speed profile at point i, m/s */
+static float lt_k[ECU_MAX_WAYPOINTS];  /* line curvature at point i, 1/m */
 
 /* Longitudinal accel available at speed v on a segment of curvature k under the
  * friction circle, capped by the powertrain limit a_cap. */
@@ -377,24 +377,28 @@ static PpResult optimize_racing_line(void)
 }
 
 
-/* Public entry point: build the racing line into track->points. */
-void path_plan(Track *track)
+/* Public entry point: build the racing line into map->points. */
+void path_plan(EcuMap *map)
 {
     int i;
-    int n_left  = track->left_count;
-    int n_right = track->right_count;
+    int n_left  = map->left_count;
+    int n_right = map->right_count;
 
     for (i = 0; i < n_left; i++) {
-        left_x[i] = track->left_cones[i].x;
-        left_y[i] = track->left_cones[i].y;
+        left_x[i] = map->left_cones[i].x;
+        left_y[i] = map->left_cones[i].y;
     }
     for (i = 0; i < n_right; i++) {
-        right_x[i] = track->right_cones[i].x;
-        right_y[i] = track->right_cones[i].y;
+        right_x[i] = map->right_cones[i].x;
+        right_y[i] = map->right_cones[i].y;
     }
 
     // 1. pair left/right cones into gates
     extract_gates(n_left, n_right);
+    // Guard: too few gates (a degenerate or partial map) makes the closed-loop
+    // resample below divide by the gate count. Leave map->points untouched and
+    // bail so the caller keeps using whatever line it had.
+    if (pp_n_gates < 3) return;
     // 2. midpoint centreline and half-widths
     build_centreline();
     // 3. resample to uniform spacing
@@ -417,8 +421,8 @@ void path_plan(Track *track)
     }
 
     for (i = 0; i < rs_n; i++) {
-        track->points[i].x = rs_px(i);
-        track->points[i].y = rs_py(i);
+        map->points[i].x = rs_px(i);
+        map->points[i].y = rs_py(i);
     }
-    track->count = rs_n;
+    map->count = rs_n;
 }

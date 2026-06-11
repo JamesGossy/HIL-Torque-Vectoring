@@ -10,11 +10,35 @@
 
 #include "../HIL_Firmware/include/vehicle_model.h"
 #include "../HIL_Firmware/include/track_parser.h"
-#include "../HIL_Firmware/include/motion_control.h"
 #include "../shared/tv_interface.h"
 #include "../ECU_Firmware/include/torque_vectoring.h"
+#include "../ECU_Firmware/include/motion_control.h"
+#include "../ECU_Firmware/include/ecu_map.h"
 
 #define DT 0.01f /* simulated seconds per tick, 100 Hz */
+
+/* Copy a ground-truth Track into the ECU map type for the legacy driver. */
+static void track_to_ecu_map(const Track *t, EcuMap *m)
+{
+    int i;
+    m->count         = t->count;
+    m->current_index = t->current_index;
+    m->lap_count     = t->lap_count;
+    for (i = 0; i < t->count; i++) {
+        m->points[i].x = t->points[i].x;
+        m->points[i].y = t->points[i].y;
+    }
+    m->left_count = t->left_count;
+    for (i = 0; i < t->left_count; i++) {
+        m->left_cones[i].x = t->left_cones[i].x;
+        m->left_cones[i].y = t->left_cones[i].y;
+    }
+    m->right_count = t->right_count;
+    for (i = 0; i < t->right_count; i++) {
+        m->right_cones[i].x = t->right_cones[i].x;
+        m->right_cones[i].y = t->right_cones[i].y;
+    }
+}
 
 // Monotonic wall-clock time in seconds.
 #ifdef _WIN32
@@ -47,11 +71,13 @@ int main(int argc, char **argv)
     }
 
     Track track;
+    EcuMap ecu_map;
     VehicleState state;
     WheelTorques torques = { 0 };
     SensorData sensors   = { 0 };
 
     track_init(&track);
+    track_to_ecu_map(&track, &ecu_map);
 
     float ih = atan2f(track.points[1].y - track.points[0].y, track.points[1].x - track.points[0].x);
     vehicle_model_init(&state, track.points[0].x, track.points[0].y, ih);
@@ -70,7 +96,11 @@ int main(int argc, char **argv)
     for (;;) {
         for (long b = 0; b < CHECK_EVERY; b++) {
             float target_speed = 0.0f;
-            float dq           = motion_control_update(&state, &track, &target_speed);
+            float steer_cmd    = state.steering;
+            CtrlPose pose      = { state.x, state.y, state.heading, state.velocity, state.yaw_rate,
+                state.ay_filt, state.steering };
+            float dq           = motion_control_update(&pose, &ecu_map, &steer_cmd, &target_speed);
+            state.steering     = steer_cmd;
 
             sensors.yaw_rate              = state.yaw_rate;
             sensors.velocity              = state.velocity;
